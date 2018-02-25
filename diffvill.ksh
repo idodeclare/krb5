@@ -40,6 +40,9 @@ do
 
 	fullsrc="./$src"
 	fulltof="$target/$tof"
+	# Continue silently if no difference exists.
+	diff -q "$fullsrc" "$fulltof" >/dev/null 2>&1 && continue
+
 	# Compare interactively unless skipping.
 	[ "$i" -gt "$skipnum" ] && "$DIFFTOOL" "$fullsrc" "$fulltof"
 	# Display the result of a diff.

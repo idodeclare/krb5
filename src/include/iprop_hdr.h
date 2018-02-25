@@ -7,7 +7,6 @@
 #ifndef	_IPROP_HDR_H
 #define	_IPROP_HDR_H
 
-/* #pragma ident	"@(#)iprop_hdr.h	1.1	04/02/20 SMI" */
 
 #ifdef	__cplusplus
 extern "C" {

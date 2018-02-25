@@ -1,4 +1,22 @@
 /*
+ * WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING
+ *
+ *	Openvision retains the copyright to derivative works of
+ *	this source code.  Do *NOT* create a derivative of this
+ *	source code before consulting with your legal department.
+ *	Do *NOT* integrate *ANY* of this source code into another
+ *	product before consulting with your legal department.
+ *
+ *	For further information, read the top-level Openvision
+ *	copyright which is contained in the top-level MIT Kerberos
+ *	copyright.
+ *
+ * WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING
+ *
+ */
+
+
+/*
  * Copyright 1994 by the Massachusetts Institute of Technology.
  * All Rights Reserved.
  *
@@ -29,6 +47,8 @@
 #include <ss/ss.h>
 #include <stdio.h>
 #include <string.h>
+#include <libintl.h>
+#include <locale.h>
 #include "kadmin.h"
 
 extern ss_request_table kadmin_cmds;
@@ -45,13 +65,25 @@ int main(argc, argv)
 
     whoami = ((whoami = strrchr(argv[0], '/')) ? whoami+1 : argv[0]);
 
+	(void) setlocale(LC_ALL, "");
+
+#if !defined(TEXT_DOMAIN)  /* Should be defined by cc -D */
+#define	TEXT_DOMAIN	"SYS_TEST"	/* Use this only if it weren't */
+#endif
+
+	(void) textdomain(TEXT_DOMAIN);
+
     request = kadmin_startup(argc, argv);
     sci_idx = ss_create_invocation(whoami, "5.0", (char *) NULL,
 				   &kadmin_cmds, &retval);
     if (retval) {
-	ss_perror(sci_idx, retval, "creating invocation");
+	ss_perror(sci_idx, retval, gettext("creating invocation"));
 	exit(1);
     }
+
+	(void) setlocale(LC_ALL, "");
+	(void) textdomain(TEXT_DOMAIN);
+
     if (request) {
 	    code = ss_execute_line(sci_idx, request);
 	    if (code != 0) {

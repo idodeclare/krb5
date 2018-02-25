@@ -1,4 +1,10 @@
 /*
+ * Copyright 2006 Sun Microsystems, Inc.  All rights reserved.
+ * Use is subject to license terms.
+ */
+
+
+/*
  * kadmin/ktutil/ktutil_funcs.c
  *
  *(C) Copyright 1995, 1996 by the Massachusetts Institute of Technology.
@@ -30,6 +36,7 @@
 #include "ktutil.h"
 #include <string.h>
 #include <ctype.h>
+#include <libintl.h>
 
 /*
  * Free a kt_list
@@ -157,8 +164,8 @@ krb5_error_code ktutil_add(context, list, princ_str, kvno,
 	    goto cleanup;
 	}
 
-	snprintf(promptstr, sizeof(promptstr), "Password for %.1000s",
-		 princ_str);
+	(void) snprintf(promptstr, sizeof(promptstr),
+		gettext("Password for %.1000s"), princ_str);
         retval = krb5_read_password(context, promptstr, NULL, password.data,
 				    &password.length);
 	if (retval)
@@ -174,7 +181,7 @@ krb5_error_code ktutil_add(context, list, princ_str, kvno,
 	password.length = 0;
 	memcpy(&lp->entry->key, &key, sizeof(krb5_keyblock));
     } else {
-        printf("Key for %s (hex): ", princ_str);
+        printf(gettext("Key for %s (hex): "), princ_str);
 	fgets(buf, BUFSIZ, stdin);
 	/*
 	 * We need to get rid of the trailing '\n' from fgets.
@@ -186,7 +193,7 @@ krb5_error_code ktutil_add(context, list, princ_str, kvno,
 	 */
 	buf[strlen(buf) - 1] = strlen(buf) % 2 ? '\0' : '0';
 	if (strlen(buf) == 0) {
-	    fprintf(stderr, "addent: Error reading key.\n");
+	    fprintf(stderr, "addent: %s", gettext("Error reading key.\n"));
 	    retval = 0;
 	    goto cleanup;
 	}
@@ -201,7 +208,8 @@ krb5_error_code ktutil_add(context, list, princ_str, kvno,
 	i = 0;
 	for (cp = buf; *cp; cp += 2) {
 	    if (!isxdigit((int) cp[0]) || !isxdigit((int) cp[1])) {
-	        fprintf(stderr, "addent: Illegal character in key.\n");
+	        fprintf(stderr, "addent: %s",
+			gettext("Illegal character in key.\n"));
 		retval = 0;
 		goto cleanup;
 	    }
@@ -331,21 +339,3 @@ krb5_error_code ktutil_write_keytab(context, list, name)
     return retval;
 }
 
-/*
- * Read in a named krb4 srvtab and append to list.  Allocate new list
- * if needed.
- */
-krb5_error_code ktutil_read_srvtab(context, name, list)
-    krb5_context context;
-    char *name;
-    krb5_kt_list *list;
-{
-    char *ktname;
-    krb5_error_code result;
-
-    if (asprintf(&ktname, "SRVTAB:%s", name) < 0)
-	return ENOMEM;
-    result = ktutil_read_keytab(context, ktname, list);
-    free(ktname);
-    return result;
-}

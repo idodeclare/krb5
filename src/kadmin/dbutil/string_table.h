@@ -1,10 +1,38 @@
 /*
-  * Copyright 1993 OpenVision Technologies, Inc., All Rights Reserved.
-  * 
-  * $Header$
-  *
-  */
- 
+ * Copyright 2006 Sun Microsystems, Inc.  All rights reserved.
+ * Use is subject to license terms.
+ */
+
+#ifndef _STRING_TABLE_H
+#define	_STRING_TABLE_H
+
+/*
+ * WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING
+ *
+ *	Openvision retains the copyright to derivative works of
+ *	this source code.  Do *NOT* create a derivative of this
+ *	source code before consulting with your legal department.
+ *	Do *NOT* integrate *ANY* of this source code into another
+ *	product before consulting with your legal department.
+ *
+ *	For further information, read the top-level Openvision
+ *	copyright which is contained in the top-level MIT Kerberos
+ *	copyright.
+ *
+ * WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING
+ *
+ */
+
+#ifdef	__cplusplus
+extern "C" {
+#endif
+
+/*
+ * Copyright 1993 OpenVision Technologies, Inc., All Rights Reserved.
+ *
+ *
+ */
+
 #ifndef _OVSEC_ADM_STRINGS_
  
 extern char *str_PARSE_NAME;
@@ -37,3 +65,9 @@ extern char *str_TOO_MANY_HIST_PRINC;
 extern char *str_WHILE_DESTROYING_ADMIN_SESSION;
  
 #endif /* _OVSEC_ADM_STRINGS_ */
+
+#ifdef	__cplusplus
+}
+#endif
+
+#endif	/* !_STRING_TABLE_H */

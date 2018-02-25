@@ -1,3 +1,21 @@
+/*
+ * WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING
+ *
+ *	Openvision retains the copyright to derivative works of
+ *	this source code.  Do *NOT* create a derivative of this
+ *	source code before consulting with your legal department.
+ *	Do *NOT* integrate *ANY* of this source code into another
+ *	product before consulting with your legal department.
+ *
+ *	For further information, read the top-level Openvision
+ *	copyright which is contained in the top-level MIT Kerberos
+ *	copyright.
+ *
+ * WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING
+ *
+ */
+
+
 #include    <unistd.h>
 #include    <string.h>
 #include    <stdlib.h>
@@ -15,6 +33,7 @@
 #include    "nstrtok.h"
 
 #define LINESIZE	32768 /* XXX */
+#define PLURAL(count)	(((count) == 1) ? error_message(IMPORT_SINGLE_RECORD) : error_message(IMPORT_PLURAL_RECORDS))
 
 static int parse_pw_hist_ent(current, hist)
    char *current;
@@ -108,7 +127,7 @@ int process_ov_principal(fname, kcontext, filep, verbose, linenop)
     krb5_tl_data	    tl_data;
     krb5_principal	    princ;
     krb5_db_entry	    kdb;
-    char		    *current = 0;
+    char		    *current = NULL;
     char		    *cp;
     int			    x, one;
     krb5_boolean	    more;

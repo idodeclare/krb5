@@ -1,4 +1,33 @@
 /*
+ * Copyright 2007 Sun Microsystems, Inc.  All rights reserved.
+ * Use is subject to license terms.
+ */
+
+#ifndef _KDB5_UTIL_H
+#define	_KDB5_UTIL_H
+
+/*
+ * WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING
+ *
+ *	Openvision retains the copyright to derivative works of
+ *	this source code.  Do *NOT* create a derivative of this
+ *	source code before consulting with your legal department.
+ *	Do *NOT* integrate *ANY* of this source code into another
+ *	product before consulting with your legal department.
+ *
+ *	For further information, read the top-level Openvision
+ *	copyright which is contained in the top-level MIT Kerberos
+ *	copyright.
+ *
+ * WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING
+ *
+ */
+
+#ifdef	__cplusplus
+extern "C" {
+#endif
+
+/*
  * admin/edit/kdb5_edit.h
  *
  * Copyright 1992, 2008, 2009 by the Massachusetts Institute of Technology.
@@ -25,7 +54,7 @@
  * 
  */
 
-#include <kdb_log.h>
+#include <kdb/kdb_log.h>
 
 #define MAX_HEADER	1024
 #define REALM_SEP	'@'
@@ -102,3 +131,8 @@ extern krb5_kvno get_next_kvno(krb5_context, krb5_db_entry *);
 
 void usage (void);
 
+#ifdef	__cplusplus
+}
+#endif
+
+#endif	/* !_KDB5_UTIL_H */

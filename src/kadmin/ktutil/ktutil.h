@@ -1,4 +1,22 @@
 /*
+ * WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING
+ *
+ *	Openvision retains the copyright to derivative works of
+ *	this source code.  Do *NOT* create a derivative of this
+ *	source code before consulting with your legal department.
+ *	Do *NOT* integrate *ANY* of this source code into another
+ *	product before consulting with your legal department.
+ *
+ *	For further information, read the top-level Openvision
+ *	copyright which is contained in the top-level MIT Kerberos
+ *	copyright.
+ *
+ * WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING
+ *
+ */
+
+
+/*
  * kadmin/ktutil/ktutil.h
  *
  * Copyright 1995 by the Massachusetts Institute of Technology.
@@ -48,10 +66,6 @@ krb5_error_code ktutil_read_keytab (krb5_context,
 krb5_error_code ktutil_write_keytab (krb5_context,
 				     krb5_kt_list,
 				     char *);
-
-krb5_error_code ktutil_read_srvtab (krb5_context,
-				    char *,
-				    krb5_kt_list *);
 
 void ktutil_add_entry (int, char *[]);
 

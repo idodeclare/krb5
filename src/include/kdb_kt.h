@@ -31,7 +31,7 @@
 #ifndef KRB5_KDB5_KT_H
 #define KRB5_KDB5_KT_H
 
-#include "kdb.h"
+#include <krb5/kdb.h>
 
 extern struct _krb5_kt_ops krb5_kt_kdb_ops;
 

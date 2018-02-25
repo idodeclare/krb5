@@ -1,4 +1,8 @@
 /*
+ * Copyright (c) 1999, 2010, Oracle and/or its affiliates. All rights reserved.
+ */
+
+/*
  * include/k5-thread.h
  *
  * Copyright 2004,2005,2006,2007,2008 by the Massachusetts Institute of Technology.
@@ -30,6 +34,33 @@
 #ifndef K5_THREAD_H
 #define K5_THREAD_H
 
+#ifdef _KERNEL
+
+#include <sys/ksynch.h>
+
+typedef kmutex_t k5_mutex_t;
+
+#define K5_MUTEX_PARTIAL_INITIALIZER {0}
+
+/* ARGSUSED */
+static void k5_mutex_assert_locked(k5_mutex_t *m) { }
+
+static int
+k5_mutex_lock(k5_mutex_t *m)
+{
+  mutex_enter(m);
+  return (0);
+}
+
+static int
+k5_mutex_unlock(k5_mutex_t *m)
+{
+  mutex_exit(m);
+  return(0);
+}
+
+#else /* _KERNEL */
+
 #include "autoconf.h"
 #ifndef KRB5_CALLCONV
 # define KRB5_CALLCONV
@@ -48,6 +79,9 @@
    //            finish does nothing
    //   Windows: partial initializer is an invalid handle,
    //            finish does the real initialization work
+   //   debug:   partial initializer sets one magic value,
+   //            finish verifies and sets a new magic value for
+   //              lock/unlock to check
    k5_mutex_t foo_mutex = K5_MUTEX_PARTIAL_INITIALIZER;
    int k5_mutex_finish_init(k5_mutex_t *);
    // for dynamic allocation
@@ -126,6 +160,8 @@
    The TSD destructor table is global state, protected by a mutex if
    threads are enabled.
 
+   Debug support: Not much.  Might check if k5_key_register has been
+   called and abort if not.
 
    Any actual external symbols will use the krb5int_ prefix.  The k5_
    names will be simple macros or inline functions to rename the
@@ -136,7 +172,135 @@
 
    More to be added, perhaps.  */
 
+#undef DEBUG_THREADS /* SUNW14resync XXX */
+#undef DEBUG_THREADS_LOC /* SUNW14resync XXX */
+#undef DEBUG_THREADS_SLOW /* debugging stuff that'll slow things down? */
+#undef DEBUG_THREADS_STATS
+
+#ifndef _KERNEL
 #include <assert.h>
+#include <stdarg.h> 
+#define ASSERT assert 
+#endif
+
+/* For tracking locations, of (e.g.) last lock or unlock of mutex.  */
+#ifdef DEBUG_THREADS_LOC
+typedef struct {
+    const char *filename;
+    int lineno;
+} k5_debug_loc;
+#define K5_DEBUG_LOC_INIT	{ __FILE__, __LINE__ }
+#if __GNUC__ >= 2
+#define K5_DEBUG_LOC		(__extension__ (k5_debug_loc)K5_DEBUG_LOC_INIT)
+#else
+static inline k5_debug_loc k5_debug_make_loc(const char *file, int line)
+{
+    k5_debug_loc l;
+    l.filename = file;
+    l.lineno = line;
+    return l;
+}
+#define K5_DEBUG_LOC		(k5_debug_make_loc(__FILE__,__LINE__))
+#endif
+#else /* ! DEBUG_THREADS_LOC */
+typedef char k5_debug_loc;
+#define K5_DEBUG_LOC_INIT	0
+#define K5_DEBUG_LOC		0
+#endif
+
+#define k5_debug_update_loc(L)	((L) = K5_DEBUG_LOC)
+
+
+
+/* Statistics gathering:
+
+   Currently incomplete, don't try enabling it.
+
+   Eventually: Report number of times locked, total and standard
+   deviation of the time the lock was held, total and std dev time
+   spent waiting for the lock.  "Report" will probably mean "write a
+   line to a file if a magic environment variable is set."  */
+
+#ifdef DEBUG_THREADS_STATS
+
+#if HAVE_TIME_H && (!defined(HAVE_SYS_TIME_H) || defined(TIME_WITH_SYS_TIME))
+# include <time.h>
+#endif
+#if HAVE_SYS_TIME_H
+# include <sys/time.h>
+#endif
+#ifdef HAVE_STDINT_H
+# include <stdint.h>
+#endif
+/* for memset */
+#include <string.h>
+/* for uint64_t */
+#include <inttypes.h>
+typedef uint64_t k5_debug_timediff_t; /* or long double */
+typedef struct timeval k5_debug_time_t;
+static inline k5_debug_timediff_t
+timediff(k5_debug_time_t t2, k5_debug_time_t t1)
+{
+    return (t2.tv_sec - t1.tv_sec) * 1000000 + (t2.tv_usec - t1.tv_usec);
+}
+static inline k5_debug_time_t get_current_time(void)
+{
+    struct timeval tv;
+    if (gettimeofday(&tv,0) < 0) { tv.tv_sec = tv.tv_usec = 0; }
+    return tv;
+}
+struct k5_timediff_stats {
+    k5_debug_timediff_t valmin, valmax, valsum, valsqsum;
+};
+typedef struct {
+    int count;
+    k5_debug_time_t time_acquired, time_created;
+    struct k5_timediff_stats lockwait, lockheld;
+} k5_debug_mutex_stats;
+#define k5_mutex_init_stats(S)					\
+	(memset((S), 0, sizeof(k5_debug_mutex_stats)),	\
+	 (S)->time_created = get_current_time(),		\
+	 0)
+#define k5_mutex_finish_init_stats(S) 	(0)
+#define K5_MUTEX_STATS_INIT	{ 0, {0}, {0}, {0}, {0} }
+typedef k5_debug_time_t k5_mutex_stats_tmp;
+#define k5_mutex_stats_start()	get_current_time()
+void KRB5_CALLCONV krb5int_mutex_lock_update_stats(k5_debug_mutex_stats *m,
+						   k5_mutex_stats_tmp start);
+void KRB5_CALLCONV krb5int_mutex_unlock_update_stats(k5_debug_mutex_stats *m);
+#define k5_mutex_lock_update_stats	krb5int_mutex_lock_update_stats
+#define k5_mutex_unlock_update_stats	krb5int_mutex_unlock_update_stats
+void KRB5_CALLCONV krb5int_mutex_report_stats(/* k5_mutex_t *m */);
+
+#else
+
+typedef char k5_debug_mutex_stats;
+#define k5_mutex_init_stats(S)		(*(S) = 's', 0)
+#define k5_mutex_finish_init_stats(S)	(0)
+#define K5_MUTEX_STATS_INIT		's'
+typedef int k5_mutex_stats_tmp;
+#define k5_mutex_stats_start()		(0)
+#ifdef __GNUC__
+static void
+k5_mutex_lock_update_stats(k5_debug_mutex_stats *m, k5_mutex_stats_tmp t)
+{
+}
+#else
+# define k5_mutex_lock_update_stats(M,S)	(S)
+#endif
+#define k5_mutex_unlock_update_stats(M)	(*(M) = 's')
+
+/* If statistics tracking isn't enabled, these functions don't actually
+   do anything.  Declare anyways so we can do type checking etc.  */
+void KRB5_CALLCONV krb5int_mutex_lock_update_stats(k5_debug_mutex_stats *m,
+						   k5_mutex_stats_tmp start);
+void KRB5_CALLCONV krb5int_mutex_unlock_update_stats(k5_debug_mutex_stats *m);
+void KRB5_CALLCONV krb5int_mutex_report_stats(/* k5_mutex_t *m */);
+
+#define krb5int_mutex_report_stats(M)	((M)->stats = 'd')
+
+#endif
+
 
 
 /* The mutex structure we use, k5_mutex_t, is defined to some
@@ -160,26 +324,93 @@
 
 /* Define the OS mutex bit.  */
 
+/* First, if we're not actually doing multiple threads, do we
+   want the debug support or not?  */
+
+#ifdef DEBUG_THREADS
+
+enum k5_mutex_init_states {
+    K5_MUTEX_DEBUG_PARTLY_INITIALIZED = 0x12,
+    K5_MUTEX_DEBUG_INITIALIZED,
+    K5_MUTEX_DEBUG_DESTROYED
+};
+enum k5_mutex_flag_states {
+    K5_MUTEX_DEBUG_UNLOCKED = 0x23,
+    K5_MUTEX_DEBUG_LOCKED
+};
+
+typedef struct {
+    enum k5_mutex_init_states initialized;
+    enum k5_mutex_flag_states locked;
+} k5_os_nothread_mutex;
+
+# define K5_OS_NOTHREAD_MUTEX_PARTIAL_INITIALIZER \
+	{ K5_MUTEX_DEBUG_PARTLY_INITIALIZED, K5_MUTEX_DEBUG_UNLOCKED }
+
+# define k5_os_nothread_mutex_finish_init(M)				\
+	(ASSERT((M)->initialized != K5_MUTEX_DEBUG_INITIALIZED),	\
+	 ASSERT((M)->initialized == K5_MUTEX_DEBUG_PARTLY_INITIALIZED),	\
+	 ASSERT((M)->locked == K5_MUTEX_DEBUG_UNLOCKED),		\
+	 (M)->initialized = K5_MUTEX_DEBUG_INITIALIZED, 0)
+# define k5_os_nothread_mutex_init(M)			\
+	((M)->initialized = K5_MUTEX_DEBUG_INITIALIZED,	\
+	 (M)->locked = K5_MUTEX_DEBUG_UNLOCKED, 0)
+# define k5_os_nothread_mutex_destroy(M)				\
+	(ASSERT((M)->initialized == K5_MUTEX_DEBUG_INITIALIZED),	\
+	 (M)->initialized = K5_MUTEX_DEBUG_DESTROYED, 0)
+
+# define k5_os_nothread_mutex_lock(M)			\
+	(k5_os_nothread_mutex_assert_unlocked(M),	\
+	 (M)->locked = K5_MUTEX_DEBUG_LOCKED, 0)
+# define k5_os_nothread_mutex_unlock(M)			\
+	(k5_os_nothread_mutex_assert_locked(M),		\
+	 (M)->locked = K5_MUTEX_DEBUG_UNLOCKED, 0)
+
+# define k5_os_nothread_mutex_assert_locked(M)				\
+	(ASSERT((M)->initialized == K5_MUTEX_DEBUG_INITIALIZED),	\
+	 ASSERT((M)->locked != K5_MUTEX_DEBUG_UNLOCKED),		\
+	 ASSERT((M)->locked == K5_MUTEX_DEBUG_LOCKED))
+# define k5_os_nothread_mutex_assert_unlocked(M)			\
+	(ASSERT((M)->initialized == K5_MUTEX_DEBUG_INITIALIZED),	\
+	 ASSERT((M)->locked != K5_MUTEX_DEBUG_LOCKED),			\
+	 ASSERT((M)->locked == K5_MUTEX_DEBUG_UNLOCKED))
+
+#else /* threads disabled and not debugging */
 typedef char k5_os_nothread_mutex;
 # define K5_OS_NOTHREAD_MUTEX_PARTIAL_INITIALIZER	0
 /* Empty inline functions avoid the "statement with no effect"
    warnings, and do better type-checking than functions that don't use
    their arguments.  */
-static inline int k5_os_nothread_mutex_finish_init(k5_os_nothread_mutex *m) {
+/* SUNW 1.4resync, remove "inline" to avoid warning */
+/* ARGSUSED */
+/* LINTED */
+static int k5_os_nothread_mutex_finish_init(k5_os_nothread_mutex *m) {
     return 0;
 }
-static inline int k5_os_nothread_mutex_init(k5_os_nothread_mutex *m) {
+/* ARGSUSED */
+/* LINTED */
+static int k5_os_nothread_mutex_init(k5_os_nothread_mutex *m) {
     return 0;
 }
-static inline int k5_os_nothread_mutex_destroy(k5_os_nothread_mutex *m) {
+/* ARGSUSED */
+/* LINTED */
+static int k5_os_nothread_mutex_destroy(k5_os_nothread_mutex *m) {
     return 0;
 }
-static inline int k5_os_nothread_mutex_lock(k5_os_nothread_mutex *m) {
+/* ARGSUSED */
+/* LINTED */
+static int k5_os_nothread_mutex_lock(k5_os_nothread_mutex *m) {
     return 0;
 }
-static inline int k5_os_nothread_mutex_unlock(k5_os_nothread_mutex *m) {
+/* ARGSUSED */
+/* LINTED */
+static int k5_os_nothread_mutex_unlock(k5_os_nothread_mutex *m) {
     return 0;
 }
+# define k5_os_nothread_mutex_assert_locked(M)		((void)0)
+# define k5_os_nothread_mutex_assert_unlocked(M)	((void)0)
+
+#endif
 
 /* Values:
    2 - function has not been run
@@ -190,7 +421,7 @@ typedef unsigned char k5_os_nothread_once_t;
 # define k5_os_nothread_once(O,F)					\
 	(*(O) == 3 ? 0							\
 	 : *(O) == 2 ? (*(O) = 4, (F)(), *(O) = 3, 0)			\
-	 : (assert(*(O) != 4), assert(*(O) == 2 || *(O) == 3), 0))
+	 : (ASSERT(*(O) != 4), ASSERT(*(O) == 2 || *(O) == 3), 0))
 
 
 
@@ -204,6 +435,8 @@ typedef k5_os_nothread_mutex k5_os_mutex;
 # define k5_os_mutex_destroy		k5_os_nothread_mutex_destroy
 # define k5_os_mutex_lock		k5_os_nothread_mutex_lock
 # define k5_os_mutex_unlock		k5_os_nothread_mutex_unlock
+# define k5_os_mutex_assert_locked	k5_os_nothread_mutex_assert_locked
+# define k5_os_mutex_assert_unlocked	k5_os_nothread_mutex_assert_unlocked
 
 # define k5_once_t			k5_os_nothread_once_t
 # define K5_ONCE_INIT			K5_OS_NOTHREAD_ONCE_INIT
@@ -282,6 +515,15 @@ typedef pthread_once_t k5_once_t;
 # define k5_once	pthread_once
 
 #endif
+typedef struct {
+    pthread_mutex_t p;
+#ifdef DEBUG_THREADS
+    pthread_t owner;
+#endif
+#ifdef USE_PTHREAD_LOCK_ONLY_IF_LOADED
+    k5_os_nothread_mutex n;
+#endif
+} k5_os_mutex;
 
 #if defined(__mips) && defined(__sgi) && (defined(_SYSTYPE_SVR4) || defined(__SYSTYPE_SVR4__))
 # ifndef HAVE_PRAGMA_WEAK_REF
@@ -311,6 +553,7 @@ typedef pthread_mutex_t k5_os_mutex;
 
 #else
 
+/* LINTED */
 static inline int k5_os_mutex_finish_init(k5_os_mutex *m) { return 0; }
 # define k5_os_mutex_init(M)		pthread_mutex_init((M), 0)
 # define k5_os_mutex_destroy(M)		pthread_mutex_destroy((M))
@@ -329,7 +572,7 @@ typedef struct {
 # define K5_OS_MUTEX_PARTIAL_INITIALIZER { INVALID_HANDLE_VALUE, 0 }
 
 # define k5_os_mutex_finish_init(M)					 \
-	(assert((M)->h == INVALID_HANDLE_VALUE),			 \
+	(ASSERT((M)->h == INVALID_HANDLE_VALUE),			 \
 	 ((M)->h = CreateMutex(NULL, FALSE, NULL)) ? 0 : GetLastError())
 # define k5_os_mutex_init(M)						 \
 	((M)->is_locked = 0,						 \
@@ -345,19 +588,22 @@ static inline int k5_os_mutex_lock(k5_os_mutex *m)
 	return GetLastError();
     /* Eventually these should be turned into some reasonable error
        code.  */
-    assert(res != WAIT_TIMEOUT);
-    assert(res != WAIT_ABANDONED);
-    assert(res == WAIT_OBJECT_0);
+    ASSERT(res != WAIT_TIMEOUT);
+    ASSERT(res != WAIT_ABANDONED);
+    ASSERT(res == WAIT_OBJECT_0);
     /* Avoid locking twice.  */
-    assert(m->is_locked == 0);
+    ASSERT(m->is_locked == 0);
     m->is_locked = 1;
     return 0;
 }
 
 # define k5_os_mutex_unlock(M)				\
-	(assert((M)->is_locked == 1),			\
+	(ASSERT((M)->is_locked == 1),			\
 	 (M)->is_locked = 0,				\
 	 ReleaseMutex((M)->h) ? 0 : GetLastError())
+
+# define k5_os_mutex_assert_unlocked(M)	((void)0)
+# define k5_os_mutex_assert_locked(M)	((void)0)
 
 #else
 
@@ -368,30 +614,66 @@ static inline int k5_os_mutex_lock(k5_os_mutex *m)
 
 
 
-typedef k5_os_mutex k5_mutex_t;
-#define K5_MUTEX_PARTIAL_INITIALIZER	K5_OS_MUTEX_PARTIAL_INITIALIZER
-static inline int k5_mutex_init(k5_mutex_t *m)
+typedef struct {
+    k5_debug_loc loc_last, loc_created;
+    k5_os_mutex os;
+    k5_debug_mutex_stats stats;
+} k5_mutex_t;
+#define K5_MUTEX_PARTIAL_INITIALIZER		\
+	{ K5_DEBUG_LOC_INIT, K5_DEBUG_LOC_INIT,	\
+	  K5_OS_MUTEX_PARTIAL_INITIALIZER, K5_MUTEX_STATS_INIT }
+/* LINTED */
+static int k5_mutex_init_1(k5_mutex_t *m, k5_debug_loc l)
 {
-    return k5_os_mutex_init(m);
+    int err = k5_os_mutex_init(&m->os);
+    if (err) return err;
+    m->loc_created = m->loc_last = l;
+    err = k5_mutex_init_stats(&m->stats);
+    ASSERT(err == 0);
+    return 0;
 }
-static inline int k5_mutex_finish_init(k5_mutex_t *m)
+#define k5_mutex_init(M)	k5_mutex_init_1((M), K5_DEBUG_LOC)
+/* LINTED */
+static  int k5_mutex_finish_init_1(k5_mutex_t *m, k5_debug_loc l)
 {
-    return k5_os_mutex_finish_init(m);
+    int err = k5_os_mutex_finish_init(&m->os);
+    if (err) return err;
+    m->loc_created = m->loc_last = l;
+    err = k5_mutex_finish_init_stats(&m->stats);
+    ASSERT(err == 0);
+    return 0;
 }
+#define k5_mutex_finish_init(M)	k5_mutex_finish_init_1((M), K5_DEBUG_LOC)
 #define k5_mutex_destroy(M)			\
-    (k5_os_mutex_destroy(M))
-
-#if __GNUC__ >= 4
-static int k5_mutex_lock(k5_mutex_t *)
-    __attribute__((warn_unused_result));
-#endif
-static inline int k5_mutex_lock(k5_mutex_t *m)
+	(k5_os_mutex_assert_unlocked(&(M)->os),	\
+	 k5_mutex_lock(M), (M)->loc_last = K5_DEBUG_LOC, k5_mutex_unlock(M), \
+	 k5_os_mutex_destroy(&(M)->os))
+#ifdef __GNUC__
+#define k5_mutex_lock(M)				\
+	__extension__ ({				\
+	    int _err = 0;				\
+	    k5_mutex_t *_m = (M);			\
+	    _err = k5_os_mutex_lock(&_m->os);		\
+	    if (_err == 0) _m->loc_last = K5_DEBUG_LOC;	\
+	    _err;					\
+	})
+#else
+/* LINTED */
+static  int k5_mutex_lock_1(k5_mutex_t *m, k5_debug_loc l)
 {
-    return k5_os_mutex_lock(m);
+    int err = 0;
+    err = k5_os_mutex_lock(&m->os);
+    if (err)
+	return err;
+    m->loc_last = l;
+    return err;
 }
-
+#define k5_mutex_lock(M)	k5_mutex_lock_1(M, K5_DEBUG_LOC)
+#endif
 #define k5_mutex_unlock(M)				\
-	(k5_os_mutex_unlock(M))
+	(k5_mutex_assert_locked(M),			\
+	 (M)->loc_last = K5_DEBUG_LOC,			\
+	 k5_os_mutex_unlock(&(M)->os))
 
 #define k5_mutex_assert_locked(M)	((void)(M))
 #define k5_mutex_assert_unlocked(M)	((void)(M))
@@ -409,11 +691,7 @@ typedef enum {
     K5_KEY_GSS_KRB5_SET_CCACHE_OLD_NAME,
     K5_KEY_GSS_KRB5_CCACHE_NAME,
     K5_KEY_GSS_KRB5_ERROR_MESSAGE,
-    K5_KEY_KIM_ERROR_MESSAGE,
-#if defined(__MACH__) && defined(__APPLE__)
-    K5_KEY_IPC_CONNECTION_INFO,
-    K5_KEY_COM_ERR_REENTER,
-#endif
+    K5_KEY_GSS_SPNEGO_ERROR_MESSAGE,
     K5_KEY_MAX
 } k5_key_t;
 /* rename shorthand symbols for export */
@@ -450,5 +728,8 @@ extern int  KRB5_CALLCONV krb5int_mutex_unlock (k5_mutex_t *);
 #undef k5_mutex_unlock
 #define k5_mutex_unlock krb5int_mutex_unlock
 #endif
+
+#endif /* _KERNEL */
+
 
 #endif /* multiple inclusion? */

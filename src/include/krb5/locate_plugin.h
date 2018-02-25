@@ -29,7 +29,7 @@
 
 #ifndef KRB5_LOCATE_PLUGIN_H_INCLUDED
 #define KRB5_LOCATE_PLUGIN_H_INCLUDED
-#include <krb5/krb5.h>
+#include <krb5.h>
 
 enum locate_service_type {
     locate_service_kdc = 1,

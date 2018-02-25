@@ -1,34 +1,36 @@
 /*
- * Copyright 2004 Sun Microsystems, Inc.  All rights reserved.
+ * Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
  */
-
-/* #pragma ident	"@(#)ipropd_svc.c	1.2	04/02/20 SMI" */
-
 
 #include <stdio.h>
 #include <stdlib.h> /* getenv, exit */
 #include <signal.h>
 #include <sys/types.h>
+#include <memory.h>
+#include <stropts.h>
+#include <netconfig.h>
 #include <sys/resource.h> /* rlimit */
 #include <syslog.h>
 
-#include "k5-platform.h"
 #include <kadm5/admin.h>
 #include <kadm5/kadm_rpc.h>
 #include <kadm5/server_internal.h>
 #include <server_acl.h>
-#include <adm_proto.h>
+#include <krb5/adm_proto.h>
 #include <string.h>
 #include <gssapi_krb5.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
-#include <kdb_log.h>
+#include <libintl.h>
+#include <kdb/kdb_log.h>
 #include "misc.h"
-#include "osconf.h"
 
+extern int setup_gss_names(struct svc_req *, char **, char **);
+extern gss_name_t get_clnt_name(struct svc_req *);
+extern char *client_addr(struct svc_req *, char *);
 extern gss_name_t rqst2name(struct svc_req *rqstp);
 
 extern void *global_server_handle;
@@ -50,14 +52,21 @@ static char *reply_nil_str	= "UPDATE_NIL";
 static char *reply_perm_str	= "UPDATE_PERM_DENIED";
 static char *reply_unknown_str	= "<UNKNOWN_CODE>";
 
-#define	LOG_UNAUTH  _("Unauthorized request: %s, client=%s, service=%s, addr=%s")
-#define	LOG_DONE    _("Request: %s, %s, %s, client=%s, service=%s, addr=%s")
+#define	LOG_UNAUTH  gettext("Unauthorized request: %s, %s, " \
+			"client=%s, service=%s, addr=%s")
+#define	LOG_DONE    gettext("Request: %s, %s, %s, client=%s, " \
+			"service=%s, addr=%s")
+
+#define	KDB5_UTIL_DUMP_STR "/usr/sbin/kdb5_util dump -i "
 
 #ifdef	DPRINT
 #undef	DPRINT
 #endif
 #define	DPRINT(i) if (nofork) printf i
 
+#ifdef POSIX_SIGNALS
+static struct sigaction s_action;
+#endif /* POSIX_SIGNALS */
 
 static void
 debprret(char *w, update_status_t ret, kdb_sno_t sno)
@@ -131,18 +140,19 @@ iprop_get_updates_1_svc(kdb_last_t *arg, struct svc_req *rqstp)
     char *whoami = "iprop_get_updates_1";
     int kret;
     kadm5_server_handle_t handle = global_server_handle;
-    char *client_name = 0, *service_name = 0;
+    char *client_name = NULL, *service_name = NULL;
+	gss_name_t name = NULL;
+	OM_uint32 min_stat;
     char obuf[256] = {0};
 
     /* default return code */
     ret.ret = UPDATE_ERROR;
 
-    DPRINT(("%s: start, last_sno=%lu\n", whoami,
-	    (unsigned long) arg->last_sno));
+	DPRINT(("%s: start, last_sno=%u\n", whoami, (ulong_t)arg->last_sno));
 
     if (!handle) {
 	krb5_klog_syslog(LOG_ERR,
-			 _("%s: server handle is NULL"),
+				gettext("%s: server handle is NULL"),
 			 whoami);
 	goto out;
     }
@@ -152,7 +162,7 @@ iprop_get_updates_1_svc(kdb_last_t *arg, struct svc_req *rqstp)
 
 	if (setup_gss_names(rqstp, &client_desc, &service_desc) < 0) {
 	    krb5_klog_syslog(LOG_ERR,
-			     _("%s: setup_gss_names failed"),
+			gettext("%s: setup_gss_names failed"),
 			     whoami);
 	    goto out;
 	}
@@ -171,6 +181,12 @@ iprop_get_updates_1_svc(kdb_last_t *arg, struct svc_req *rqstp)
     DPRINT(("%s: clprinc=`%s'\n\tsvcprinc=`%s'\n",
 	    whoami, client_name, service_name));
 
+	if (!(name = get_clnt_name(rqstp))) {
+		krb5_klog_syslog(LOG_ERR,
+			gettext("%s: Couldn't obtain client's name"),
+			whoami);
+		goto out;
+	}
     if (!kadm5int_acl_check(handle->context,
 			    rqst2name(rqstp),
 			    ACL_IPROP,
@@ -178,6 +194,9 @@ iprop_get_updates_1_svc(kdb_last_t *arg, struct svc_req *rqstp)
 			    NULL)) {
 	ret.ret = UPDATE_PERM_DENIED;
 
+		audit_kadmind_unauth(rqstp->rq_xprt, l_port,
+				    whoami,
+				    "<null>", client_name);
 	krb5_klog_syslog(LOG_NOTICE, LOG_UNAUTH, whoami,
 			 client_name, service_name,
 			 client_addr(rqstp));
@@ -188,30 +207,34 @@ iprop_get_updates_1_svc(kdb_last_t *arg, struct svc_req *rqstp)
 
     if (ret.ret == UPDATE_OK) {
 	(void) snprintf(obuf, sizeof (obuf),
-			_("%s; Incoming SerialNo=%lu; Outgoing SerialNo=%lu"),
+		gettext("%s; Incoming SerialNo=%lu; Outgoing SerialNo=%lu"),
 			replystr(ret.ret),
-			(unsigned long)arg->last_sno,
-			(unsigned long)ret.lastentry.last_sno);
-    } else {
-	(void) snprintf(obuf, sizeof (obuf),
-			_("%s; Incoming SerialNo=%lu; Outgoing SerialNo=N/A"),
-			replystr(ret.ret),
-			(unsigned long)arg->last_sno);
-    }
+				(ulong_t)arg->last_sno,
+				(ulong_t)ret.lastentry.last_sno);
+	} else {
+		(void) snprintf(obuf, sizeof (obuf),
+		gettext("%s; Incoming SerialNo=%u; Outgoing SerialNo=N/A"),
+				replystr(ret.ret),
+				(ulong_t)arg->last_sno);
+	}
 
-    krb5_klog_syslog(LOG_NOTICE,
-		     _("Request: %s, %s, %s, client=%s, service=%s, addr=%s"),
-		     whoami,
-		     obuf,
-		     ((kret == 0) ? "success" : error_message(kret)),
-		     client_name, service_name,
-		     client_addr(rqstp));
+	audit_kadmind_auth(rqstp->rq_xprt, l_port,
+			whoami,
+			obuf, client_name, kret);
+
+	krb5_klog_syslog(LOG_NOTICE, LOG_DONE, whoami,
+			obuf,
+			((kret == 0) ? "success" : error_message(kret)),
+			client_name, service_name,
+			client_addr(rqstp, abuf));
 
 out:
     if (nofork)
 	debprret(whoami, ret.ret, ret.lastentry.last_sno);
     free(client_name);
     free(service_name);
+	if (name)
+		gss_release_name(&min_stat, &name);
     return (&ret);
 }
 
@@ -242,11 +265,14 @@ getclhoststr(char *clprinc, char *cl, size_t len)
 }
 
 kdb_fullresync_result_t *
-iprop_full_resync_1_svc(/* LINTED */ void *argp, struct svc_req *rqstp)
+iprop_full_resync_1_svc(
+	/* LINTED */
+	void *argp,
+	struct svc_req *rqstp)
 {
     static kdb_fullresync_result_t ret;
-    char *tmpf = 0;
-    char *ubuf = 0;
+	char tmpf[MAX_FILENAME] = {0};
+	char ubuf[MAX_FILENAME + sizeof (KDB5_UTIL_DUMP_STR)] = {0};
     char clhost[MAXHOSTNAMELEN] = {0};
     int pret, fret;
     kadm5_server_handle_t handle = global_server_handle;
@@ -260,7 +286,7 @@ iprop_full_resync_1_svc(/* LINTED */ void *argp, struct svc_req *rqstp)
 
     if (!handle) {
 	krb5_klog_syslog(LOG_ERR,
-			 _("%s: server handle is NULL"),
+				gettext("%s: server handle is NULL"),
 			 whoami);
 	goto out;
     }
@@ -272,7 +298,7 @@ iprop_full_resync_1_svc(/* LINTED */ void *argp, struct svc_req *rqstp)
 
 	if (setup_gss_names(rqstp, &client_desc, &service_desc) < 0) {
 	    krb5_klog_syslog(LOG_ERR,
-			     _("%s: setup_gss_names failed"),
+			gettext("%s: setup_gss_names failed"),
 			     whoami);
 	    goto out;
 	}
@@ -291,6 +317,12 @@ iprop_full_resync_1_svc(/* LINTED */ void *argp, struct svc_req *rqstp)
     DPRINT(("%s: clprinc=`%s'\n\tsvcprinc=`%s'\n",
 	    whoami, client_name, service_name));
 
+	if (!(name = get_clnt_name(rqstp))) {
+		krb5_klog_syslog(LOG_ERR,
+			gettext("%s: Couldn't obtain client's name"),
+			whoami);
+		goto out;
+	}
     if (!kadm5int_acl_check(handle->context,
 			    rqst2name(rqstp),
 			    ACL_IPROP,
@@ -298,15 +330,18 @@ iprop_full_resync_1_svc(/* LINTED */ void *argp, struct svc_req *rqstp)
 			    NULL)) {
 	ret.ret = UPDATE_PERM_DENIED;
 
+		audit_kadmind_unauth(rqstp->rq_xprt, l_port,
+				    whoami,
+				    "<null>", client_name);
 	krb5_klog_syslog(LOG_NOTICE, LOG_UNAUTH, whoami,
-			 client_name, service_name,
-			 client_addr(rqstp));
+				"<null>", client_name, service_name,
+				client_addr(rqstp, abuf));
 	goto out;
     }
 
     if (!getclhoststr(client_name, clhost, sizeof (clhost))) {
 	krb5_klog_syslog(LOG_ERR,
-			 _("%s: getclhoststr failed"),
+			gettext("%s: getclhoststr failed"),
 			 whoami);
 	goto out;
     }
@@ -316,7 +351,7 @@ iprop_full_resync_1_svc(/* LINTED */ void *argp, struct svc_req *rqstp)
      */
     if (asprintf(&tmpf, "%s_%s", KPROP_DEFAULT_FILE, clhost) < 0) {
 	krb5_klog_syslog(LOG_ERR,
-			 _("%s: unable to construct db dump file name; out of memory"),
+		    gettext("%s: unable to construct db dump file name; out of memory"),
 			 whoami);
 	goto out;
     }
@@ -328,8 +363,8 @@ iprop_full_resync_1_svc(/* LINTED */ void *argp, struct svc_req *rqstp)
     if (asprintf(&ubuf, "%s dump -i %s </dev/null 2>&1",
 		 KPROPD_DEFAULT_KDB5_UTIL, tmpf) < 0) {
 	krb5_klog_syslog(LOG_ERR,
-			 _("%s: cannot construct kdb5 util dump string too long; out of memory"),
-			 whoami);
+	    gettext("%s: cannot construct kdb5 util dump string too long; out of memory"),
+	        whoami);
 	goto out;
     }
 
@@ -347,14 +382,20 @@ iprop_full_resync_1_svc(/* LINTED */ void *argp, struct svc_req *rqstp)
 	    perror(whoami);
 	}
 	krb5_klog_syslog(LOG_ERR,
-			 _("%s: fork failed: %s"),
+				gettext("%s: fork failed: %s"),
 			 whoami,
 			 error_message(errno));
 	goto out;
 
     case 0: /* child */
 	DPRINT(("%s: run `%s' ...\n", whoami, ubuf));
-	(void) signal(SIGCHLD, SIG_DFL);
+#ifdef POSIX_SIGNALS
+		(void) sigemptyset(&s_action.sa_mask);
+		s_action.sa_handler = SIG_DFL;
+		(void) sigaction(SIGCHLD, &s_action, (struct sigaction *) NULL);
+#else
+		(void) signal(SIGCHLD, SIG_DFL);
+#endif /* POSIX_SIGNALS */
 	/* run kdb5_util(1M) dump for IProp */
 	/* XXX popen can return NULL; is pclose(NULL) okay?  */
 	pret = pclose(popen(ubuf, "w"));
@@ -367,7 +408,7 @@ iprop_full_resync_1_svc(/* LINTED */ void *argp, struct svc_req *rqstp)
 		perror(whoami);
 	    }
 	    krb5_klog_syslog(LOG_ERR,
-			     _("%s: pclose(popen) failed: %s"),
+			     gettext("%s: pclose(popen) failed: %s"),
 			     whoami,
 			     error_message(errno));
 	    goto out;
@@ -388,7 +429,7 @@ iprop_full_resync_1_svc(/* LINTED */ void *argp, struct svc_req *rqstp)
 		perror(whoami);
 	    }
 	    krb5_klog_syslog(LOG_ERR,
-			     _("%s: exec failed: %s"),
+			     gettext("%s: exec failed: %s"),
 			     whoami,
 			     error_message(errno));
 	    goto out;
@@ -401,11 +442,15 @@ iprop_full_resync_1_svc(/* LINTED */ void *argp, struct svc_req *rqstp)
 	ret.lastentry.last_time.seconds = 0;
 	ret.lastentry.last_time.useconds = 0;
 
-	krb5_klog_syslog(LOG_NOTICE,
-			 _("Request: %s, spawned resync process %d, client=%s, service=%s, addr=%s"),
-			 whoami, fret,
-			 client_name, service_name,
-			 client_addr(rqstp));
+		audit_kadmind_auth(rqstp->rq_xprt, l_port,
+				whoami,
+				"<null>", client_name, 0);
+
+		krb5_klog_syslog(LOG_NOTICE, LOG_DONE, whoami,
+				"<null>",
+				"success",
+				client_name, service_name,
+				client_addr(rqstp, abuf));
 
 	goto out;
     }
@@ -537,7 +582,7 @@ krb5_iprop_prog_1(struct svc_req *rqstp,
 
     default:
 	krb5_klog_syslog(LOG_ERR,
-			 _("RPC unknown request: %d (%s)"),
+			 gettext("RPC unknown request: %d (%s)"),
 			 rqstp->rq_proc, whoami);
 	svcerr_noproc(transp);
 	return;
@@ -545,7 +590,7 @@ krb5_iprop_prog_1(struct svc_req *rqstp,
     (void) memset((char *)&argument, 0, sizeof (argument));
     if (!svc_getargs(transp, _xdr_argument, (caddr_t)&argument)) {
 	krb5_klog_syslog(LOG_ERR,
-			 _("RPC svc_getargs failed (%s)"),
+			 gettext("RPC svc_getargs failed (%s)"),
 			 whoami);
 	svcerr_decode(transp);
 	return;
@@ -555,13 +600,13 @@ krb5_iprop_prog_1(struct svc_req *rqstp,
     if (_xdr_result && result != NULL &&
 	!svc_sendreply(transp, _xdr_result, result)) {
 	krb5_klog_syslog(LOG_ERR,
-			 _("RPC svc_sendreply failed (%s)"),
+			 gettext("RPC svc_sendreply failed (%s)"),
 			 whoami);
 	svcerr_systemerr(transp);
     }
     if (!svc_freeargs(transp, _xdr_argument, (caddr_t)&argument)) {
 	krb5_klog_syslog(LOG_ERR,
-			 _("RPC svc_freeargs failed (%s)"),
+			 gettext("RPC svc_freeargs failed (%s)"),
 			 whoami);
 
 	exit(1);

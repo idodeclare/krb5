@@ -1,4 +1,10 @@
 /*
+ * Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
+ * Use is subject to license terms.
+ */
+
+
+/*
  * k5-platform.h
  *
  * Copyright 2003, 2004, 2005, 2007, 2008, 2009 Massachusetts Institute of Technology.
@@ -41,6 +47,10 @@
 #ifndef K5_PLATFORM_H
 #define K5_PLATFORM_H
 
+/* Solaris Kerberos */
+#ifndef _KERNEL
+#include <sys/types.h>
+
 #include "autoconf.h"
 #include <string.h>
 #include <stdarg.h>
@@ -49,14 +59,6 @@
 #include <stdio.h>
 #include <fcntl.h>
 #include <errno.h>
-
-#ifdef _WIN32
-#define CAN_COPY_VA_LIST
-#endif
-
-#if defined(macintosh) || (defined(__MACH__) && defined(__APPLE__))
-#include <TargetConditionals.h>
-#endif
 
 /* Initialization and finalization function support for libraries.
 
@@ -397,6 +399,7 @@ typedef struct { int error; unsigned char did_run; } k5_init_t;
 
 #endif
 
+#endif /* !_KERNEL */
 
 /* 64-bit support: krb5_ui_8 and krb5_int64.
 
@@ -419,6 +422,9 @@ typedef struct { int error; unsigned char did_run; } k5_init_t;
 # define UINT64_TYPE unsigned long long
 #endif
 
+#ifndef _KERNEL
+#include <limits.h>
+#endif /* !_KERNEL */
 #ifndef SIZE_MAX
 # define SIZE_MAX ((size_t)((size_t)0 - 1))
 #endif
@@ -431,110 +437,11 @@ typedef struct { int error; unsigned char did_run; } k5_init_t;
    specific byte orders.  Add per-platform optimizations as
    needed.  */
 
-#if HAVE_ENDIAN_H
-# include <endian.h>
-#elif HAVE_MACHINE_ENDIAN_H
-# include <machine/endian.h>
-#endif
-/* Check for BIG/LITTLE_ENDIAN macros.  If exactly one is defined, use
-   it.  If both are defined, then BYTE_ORDER should be defined and
-   match one of them.  Try those symbols, then try again with an
-   underscore prefix.  */
-#if defined(BIG_ENDIAN) && defined(LITTLE_ENDIAN)
-# if BYTE_ORDER == BIG_ENDIAN
-#  define K5_BE
-# endif
-# if BYTE_ORDER == LITTLE_ENDIAN
-#  define K5_LE
-# endif
-#elif defined(BIG_ENDIAN)
-# define K5_BE
-#elif defined(LITTLE_ENDIAN)
-# define K5_LE
-#elif defined(_BIG_ENDIAN) && defined(_LITTLE_ENDIAN)
-# if _BYTE_ORDER == _BIG_ENDIAN
-#  define K5_BE
-# endif
-# if _BYTE_ORDER == _LITTLE_ENDIAN
-#  define K5_LE
-# endif
-#elif defined(_BIG_ENDIAN)
-# define K5_BE
-#elif defined(_LITTLE_ENDIAN)
-# define K5_LE
-#endif
-#if !defined(K5_BE) && !defined(K5_LE)
-/* Look for some architectures we know about.
-
-   MIPS can use either byte order, but the preprocessor tells us which
-   mode we're compiling for.  The GCC config files indicate that
-   variants of Alpha and IA64 might be out there with both byte
-   orders, but until we encounter the "wrong" ones in the real world,
-   just go with the default (unless there are cpp predefines to help
-   us there too).
-
-   As far as I know, only PDP11 and ARM (which we don't handle here)
-   have strange byte orders where an 8-byte value isn't laid out as
-   either 12345678 or 87654321.  */
-# if defined(__i386__) || defined(_MIPSEL) || defined(__alpha__) || defined(__ia64__)
-#  define K5_LE
-# endif
-# if defined(__hppa__) || defined(__rs6000__) || defined(__sparc__) || defined(_MIPSEB) || defined(__m68k__) || defined(__sparc64__) || defined(__ppc__) || defined(__ppc64__)
-#  define K5_BE
-# endif
-#endif
-#if defined(K5_BE) && defined(K5_LE)
-# error "oops, check the byte order macros"
-#endif
-
-/* Optimize for GCC on platforms with known byte orders.
-
-   GCC's packed structures can be written to with any alignment; the
-   compiler will use byte operations, unaligned-word operations, or
-   normal memory ops as appropriate for the architecture.
-
-   This assumes the availability of uint##_t types, which should work
-   on most of our platforms except Windows, where we're not using
-   GCC.  */
-#ifdef __GNUC__
-# define PUT(SIZE,PTR,VAL)	(((struct { uint##SIZE##_t i; } __attribute__((packed)) *)(PTR))->i = (VAL))
-# define GET(SIZE,PTR)		(((const struct { uint##SIZE##_t i; } __attribute__((packed)) *)(PTR))->i)
-# define PUTSWAPPED(SIZE,PTR,VAL)	PUT(SIZE,PTR,SWAP##SIZE(VAL))
-# define GETSWAPPED(SIZE,PTR)		SWAP##SIZE(GET(SIZE,PTR))
-#endif
-/* To do: Define SWAP16, SWAP32, SWAP64 macros to byte-swap values
-   with the indicated numbers of bits.
-
-   Linux: byteswap.h, bswap_16 etc.
-   Solaris 10: none
-   Mac OS X: machine/endian.h or byte_order.h, NXSwap{Short,Int,LongLong}
-   NetBSD: sys/bswap.h, bswap16 etc.  */
-
-#if defined(HAVE_BYTESWAP_H) && defined(HAVE_BSWAP_16)
-# include <byteswap.h>
-# define SWAP16			bswap_16
-# define SWAP32			bswap_32
-# ifdef HAVE_BSWAP_64
-#  define SWAP64		bswap_64
-# endif
-#endif
-#if TARGET_OS_MAC
-# include <architecture/byte_order.h>
-# if 0 /* This causes compiler warnings.  */
-#  define SWAP16		OSSwapInt16
-# else
-#  define SWAP16		k5_swap16
-static inline unsigned int k5_swap16 (unsigned int x) {
-    x &= 0xffff;
-    return (x >> 8) | ((x & 0xff) << 8);
-}
-# endif
-# define SWAP32			OSSwapInt32
-# define SWAP64			OSSwapInt64
-#endif
-
-static inline void
-store_16_be (unsigned int val, void *vp)
+/* Solaris Kerberos: To avoid problems with lint the following
+   functions can be found in separate header files. */
+#if 0
+static void
+store_16_be (unsigned int val, unsigned char *p)
 {
     unsigned char *p = vp;
 #if defined(__GNUC__) && defined(K5_BE)
@@ -749,200 +656,19 @@ k5_ntohll (UINT64_TYPE val)
 {
     return k5_htonll (val);
 }
+#endif
 
 /* Make the interfaces to getpwnam and getpwuid consistent.
    Model the wrappers on the POSIX thread-safe versions, but
    use the unsafe system versions if the safe ones don't exist
    or we can't figure out their interfaces.  */
+/* SUNW15resync - just have Solaris relevant ones */
 
-/* int k5_getpwnam_r(const char *, blah blah) */
-#ifdef HAVE_GETPWNAM_R
-# ifndef GETPWNAM_R_4_ARGS
-/* POSIX */
-#  define k5_getpwnam_r(NAME, REC, BUF, BUFSIZE, OUT)	\
-	(getpwnam_r(NAME,REC,BUF,BUFSIZE,OUT) == 0	\
-	 ? (*(OUT) == NULL ? -1 : 0) : -1)
-# else
-/* POSIX drafts? */
-#  ifdef GETPWNAM_R_RETURNS_INT
-#   define k5_getpwnam_r(NAME, REC, BUF, BUFSIZE, OUT)	\
-	(getpwnam_r(NAME,REC,BUF,BUFSIZE) == 0		\
-	 ? (*(OUT) = REC, 0)				\
-	 : (*(OUT) = NULL, -1))
-#  else
-#   define k5_getpwnam_r(NAME, REC, BUF, BUFSIZE, OUT)  \
-	(*(OUT) = getpwnam_r(NAME,REC,BUF,BUFSIZE), *(OUT) == NULL ? -1 : 0)
-#  endif
-# endif
-#else /* no getpwnam_r, or can't figure out #args or return type */
-/* Will get warnings about unused variables.  */
-# define k5_getpwnam_r(NAME, REC, BUF, BUFSIZE, OUT) \
-	(*(OUT) = getpwnam(NAME), *(OUT) == NULL ? -1 : 0)
-#endif
+#define k5_getpwnam_r(NAME, REC, BUF, BUFSIZE, OUT)  \
+         (*(OUT) = getpwnam_r(NAME,REC,BUF,BUFSIZE), *(OUT) == NULL ? -1 : 0)
 
-/* int k5_getpwuid_r(uid_t, blah blah) */
-#ifdef HAVE_GETPWUID_R
-# ifndef GETPWUID_R_4_ARGS
-/* POSIX */
-#  define k5_getpwuid_r(UID, REC, BUF, BUFSIZE, OUT)	\
-	(getpwuid_r(UID,REC,BUF,BUFSIZE,OUT) == 0	\
-	 ? (*(OUT) == NULL ? -1 : 0) : -1)
-# else
-/* POSIX drafts?  Yes, I mean to test GETPWNAM... here.  Less junk to
-   do at configure time.  */
-#  ifdef GETPWNAM_R_RETURNS_INT
-#   define k5_getpwuid_r(UID, REC, BUF, BUFSIZE, OUT)	\
-	(getpwuid_r(UID,REC,BUF,BUFSIZE) == 0		\
-	 ? (*(OUT) = REC, 0)				\
-	 : (*(OUT) = NULL, -1))
-#  else
-#   define k5_getpwuid_r(UID, REC, BUF, BUFSIZE, OUT)  \
-	(*(OUT) = getpwuid_r(UID,REC,BUF,BUFSIZE), *(OUT) == NULL ? -1 : 0)
-#  endif
-# endif
-#else /* no getpwuid_r, or can't figure out #args or return type */
-/* Will get warnings about unused variables.  */
-# define k5_getpwuid_r(UID, REC, BUF, BUFSIZE, OUT) \
-	(*(OUT) = getpwuid(UID), *(OUT) == NULL ? -1 : 0)
-#endif
-
-/* Ensure, if possible, that the indicated file descriptor won't be
-   kept open if we exec another process (e.g., launching a ccapi
-   server).  If we don't know how to do it... well, just go about our
-   business.  Probably most callers won't check the return status
-   anyways.  */
-
-#if 0
-static inline int
-set_cloexec_fd(int fd)
-{
-#if defined(F_SETFD)
-# ifdef FD_CLOEXEC
-    if (fcntl(fd, F_SETFD, FD_CLOEXEC) != 0)
-	return errno;
-# else
-    if (fcntl(fd, F_SETFD, 1) != 0)
-	return errno;
-# endif
-#endif
-    return 0;
-}
-
-static inline int
-set_cloexec_file(FILE *f)
-{
-    return set_cloexec_fd(fileno(f));
-}
-#else
-/* Macros make the Sun compiler happier, and all variants of this do a
-   single evaluation of the argument, and fcntl and fileno should
-   produce reasonable error messages on type mismatches, on any system
-   with F_SETFD.  */
-#ifdef F_SETFD
-# ifdef FD_CLOEXEC
-#  define set_cloexec_fd(FD)	(fcntl((FD), F_SETFD, FD_CLOEXEC) ? errno : 0)
-# else
-#  define set_cloexec_fd(FD)	(fcntl((FD), F_SETFD, 1) ? errno : 0)
-# endif
-#else
-# define set_cloexec_fd(FD)	((FD),0)
-#endif
-#define set_cloexec_file(F)	set_cloexec_fd(fileno(F))
-#endif
-
-
-
-/* Since the original ANSI C spec left it undefined whether or
-   how you could copy around a va_list, C 99 added va_copy.
-   For old implementations, let's do our best to fake it.
-
-   XXX Doesn't yet handle implementations with __va_copy (early draft)
-   or GCC's __builtin_va_copy.  */
-#if defined(HAS_VA_COPY) || defined(va_copy)
-/* Do nothing.  */
-#elif defined(CAN_COPY_VA_LIST)
-#define va_copy(dest, src)	((dest) = (src))
-#else
-/* Assume array type, but still simply copyable.
-
-   There is, theoretically, the possibility that va_start will
-   allocate some storage pointed to by the va_list, and in that case
-   we'll just lose.  If anyone cares, we could try to devise a test
-   for that case.  */
-#define va_copy(dest, src)	memcmp(dest, src, sizeof(va_list))
-#endif
-
-/* Provide strlcpy/strlcat interfaces. */
-#ifndef HAVE_STRLCPY
-#define strlcpy krb5int_strlcpy
-#define strlcat krb5int_strlcat
-extern size_t krb5int_strlcpy(char *dst, const char *src, size_t siz);
-extern size_t krb5int_strlcat(char *dst, const char *src, size_t siz);
-#endif
-
-/* Provide [v]asprintf interfaces.  */
-#ifndef HAVE_VSNPRINTF
-#ifdef _WIN32
-static inline int
-vsnprintf(char *str, size_t size, const char *format, va_list args)
-{
-    va_list args_copy;
-    int length;
-
-    va_copy(args_copy, args);
-    length = _vscprintf(format, args_copy);
-    va_end(args_copy);
-    if (size)
-	_vsnprintf(str, size, format, args);
-    return length;
-}
-static inline int
-snprintf(char *str, size_t size, const char *format, ...)
-{
-    va_list args;
-    int n;
-
-    va_start(args, format);
-    n = vsnprintf(str, size, format, args);
-    va_end(args);
-    return n;
-}
-#else /* not win32 */
-#error We need an implementation of vsnprintf.
-#endif /* win32? */
-#endif /* no vsnprintf */
-
-#ifndef HAVE_VASPRINTF
-
-extern int krb5int_vasprintf(char **, const char *, va_list)
-#if !defined(__cplusplus) && (__GNUC__ > 2)
-    __attribute__((__format__(__printf__, 2, 0)))
-#endif
-    ;
-extern int krb5int_asprintf(char **, const char *, ...)
-#if !defined(__cplusplus) && (__GNUC__ > 2)
-    __attribute__((__format__(__printf__, 2, 3)))
-#endif
-    ;
-
-#define vasprintf krb5int_vasprintf
-/* Assume HAVE_ASPRINTF iff HAVE_VASPRINTF.  */
-#define asprintf krb5int_asprintf
-
-#elif defined(NEED_VASPRINTF_PROTO)
-
-extern int vasprintf(char **, const char *, va_list)
-#if !defined(__cplusplus) && (__GNUC__ > 2)
-    __attribute__((__format__(__printf__, 2, 0)))
-#endif
-    ;
-extern int asprintf(char **, const char *, ...)
-#if !defined(__cplusplus) && (__GNUC__ > 2)
-    __attribute__((__format__(__printf__, 2, 3)))
-#endif
-    ;
-
-#endif /* have vasprintf and prototype? */
+#define k5_getpwuid_r(UID, REC, BUF, BUFSIZE, OUT)  \
+        (*(OUT) = getpwuid_r(UID,REC,BUF,BUFSIZE), *(OUT) == NULL ? -1 : 0)
 
 /* Return true if the snprintf return value RESULT reflects a buffer
    overflow for the buffer size SIZE.
@@ -959,15 +685,5 @@ extern int asprintf(char **, const char *, ...)
 */
 #define SNPRINTF_OVERFLOW(result, size) \
     ((unsigned int)(result) >= (size_t)(size))
-
-#ifndef HAVE_MKSTEMP
-extern int krb5int_mkstemp(char *);
-#define mkstemp krb5int_mkstemp
-#endif
-
-/* Fudge for future adoption of gettext or the like.  */
-#ifndef _
-#define _(X) (X)
-#endif
 
 #endif /* K5_PLATFORM_H */

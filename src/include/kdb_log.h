@@ -6,12 +6,13 @@
 #ifndef	_KDB_LOG_H
 #define	_KDB_LOG_H
 
-/* #pragma ident	"@(#)kdb_log.h	1.3	04/02/23 SMI" */
+#pragma ident	"%Z%%M%	%I%	%E% SMI"
 
+#include <k5-int.h>
 #include <iprop_hdr.h>
 #include <iprop.h>
 #include <limits.h>
-#include "kdb.h"
+#include <kadm5/admin.h>
 
 #ifdef	__cplusplus
 extern "C" {
@@ -20,7 +21,7 @@ extern "C" {
 /*
  * DB macros
  */
-#define	INDEX(ulogaddr, i) ((unsigned long) ulogaddr + sizeof (kdb_hlog_t) + \
+#define	INDEX(ulogaddr, i) ((ulong_t) ulogaddr + sizeof (kdb_hlog_t) + \
 	(i*ulog->kdb_block))
 
 /*
@@ -52,6 +53,8 @@ extern "C" {
 /*
  * Default ulog file attributes
  */
+#define	ULOG_FILE	"/var/krb5/principal.ulog"
+#define	MAX_FILENAME	(PATH_MAX + 1)
 #define	MAX_ULOGENTRIES	2500
 #define	DEF_ULOGENTRIES	1000
 #define	ULOG_IDLE_TIME	10		/* in seconds */
@@ -67,9 +70,7 @@ extern "C" {
  * Prototype declarations
  */
 extern krb5_error_code ulog_map(krb5_context context,
-				const char *logname, uint32_t entries,
-				int caller,
-				char **db_args);
+	kadm5_config_params *params, int caller);
 extern krb5_error_code ulog_add_update(krb5_context context,
 	kdb_incr_update_t *upd);
 extern krb5_error_code ulog_delete_update(krb5_context context,

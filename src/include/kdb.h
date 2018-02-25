@@ -1,4 +1,9 @@
 /*
+ * Copyright 2008 Sun Microsystems, Inc.  All rights reserved.
+ * Use is subject to license terms.
+ */
+
+/*
  * include/krb5/kdb.h
  *
  * Copyright 1990,1991 by the Massachusetts Institute of Technology.
@@ -239,15 +244,27 @@ extern char *krb5_mkey_pwd_prompt2;
  *
  * Data encoding is little-endian.
  */
-#ifdef _KRB5_INT_H
 #include "k5-platform.h"
 #define	krb5_kdb_decode_int16(cp, i16)	\
-	*((krb5_int16 *) &(i16)) = load_16_le(cp)
+	*((krb5_int16 *) &(i16)) = (((krb5_int16) ((unsigned char) (cp)[0]))| \
+			      ((krb5_int16) ((unsigned char) (cp)[1]) << 8))
 #define	krb5_kdb_decode_int32(cp, i32)	\
-	*((krb5_int32 *) &(i32)) = load_32_le(cp)
-#define krb5_kdb_encode_int16(i16, cp)	store_16_le(i16, cp)
-#define	krb5_kdb_encode_int32(i32, cp)	store_32_le(i32, cp)
-#endif /* _KRB5_INT_H */
+	*((krb5_int32 *) &(i32)) = (((krb5_int32) ((unsigned char) (cp)[0]))| \
+			      ((krb5_int32) ((unsigned char) (cp)[1]) << 8) | \
+			      ((krb5_int32) ((unsigned char) (cp)[2]) << 16)| \
+			      ((krb5_int32) ((unsigned char) (cp)[3]) << 24))
+#define	krb5_kdb_encode_int16(i16, cp)	\
+	{							\
+	    (cp)[0] = (unsigned char) ((i16) & 0xff);		\
+	    (cp)[1] = (unsigned char) (((i16) >> 8) & 0xff);	\
+	}
+#define	krb5_kdb_encode_int32(i32, cp)	\
+	{							\
+	    (cp)[0] = (unsigned char) ((i32) & 0xff);		\
+	    (cp)[1] = (unsigned char) (((i32) >> 8) & 0xff);	\
+	    (cp)[2] = (unsigned char) (((i32) >> 16) & 0xff);	\
+	    (cp)[3] = (unsigned char) (((i32) >> 24) & 0xff);	\
+	}
 
 #define KRB5_KDB_OPEN_RW                0
 #define KRB5_KDB_OPEN_RO                1
@@ -296,6 +313,11 @@ krb5_error_code krb5_db_get_principal ( krb5_context kcontext,
 					krb5_db_entry *entries,
 					int *nentries,
 					krb5_boolean *more );
+krb5_error_code krb5_db_get_principal_nolock ( krb5_context kcontext,
+					krb5_const_principal search_for,
+					krb5_db_entry *entries,
+					int *nentries,
+					krb5_boolean *more );
 krb5_error_code krb5_db_free_principal ( krb5_context kcontext,
 					 krb5_db_entry *entry,
 					 int count );
@@ -305,10 +327,12 @@ krb5_error_code krb5_db_put_principal ( krb5_context kcontext,
 krb5_error_code krb5_db_delete_principal ( krb5_context kcontext,
 					   krb5_principal search_for,
 					   int *nentries );
+/* Solaris Kerberos: adding support for db_args */
 krb5_error_code krb5_db_iterate ( krb5_context kcontext,
 				  char *match_entry,
 				  int (*func) (krb5_pointer, krb5_db_entry *),
-				  krb5_pointer func_arg );
+				  krb5_pointer func_arg,
+				  char **db_args );
 krb5_error_code krb5_supported_realms ( krb5_context kcontext,
 					char **realms );
 krb5_error_code krb5_free_supported_realms ( krb5_context kcontext,
@@ -618,8 +642,23 @@ krb5_dbe_def_cpw( krb5_context	  context,
 		  krb5_db_entry	* db_entry);
 
 krb5_error_code
+krb5_db_supports_iprop(krb5_context kcontext, int *iprop_supported);
+
+krb5_error_code
 krb5_def_promote_db(krb5_context, char *, char **);
 
+typedef struct _osa_policy_ent_t {
+    int		version;
+    char	*name;
+    uint32_t	pw_min_life;
+    uint32_t	pw_max_life;
+    uint32_t	pw_min_length;
+    uint32_t	pw_min_classes;
+    uint32_t	pw_history_num;
+    uint32_t	policy_refcnt;
+} osa_policy_ent_rec, *osa_policy_ent_t;
+
+typedef	void	(*osa_adb_iter_policy_func) (void *, osa_policy_ent_t);
 krb5_error_code
 krb5_dbekd_def_decrypt_key_data( krb5_context		  context,
 				 const krb5_keyblock	* mkey,

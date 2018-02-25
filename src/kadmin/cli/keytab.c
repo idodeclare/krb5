@@ -1,8 +1,12 @@
 /*
+ * Copyright 2008 Sun Microsystems, Inc.  All rights reserved.
+ * Use is subject to license terms.
+ */
+
+
+/*
  * Copyright 1993 OpenVision Technologies, Inc., All Rights Reserved.
  *
- * $Id$
- * $Source$
  */
 
 /*
@@ -39,11 +43,13 @@ static char *rcsid = "$Header$";
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <libintl.h>
 
 #include "k5-int.h"
 #include <kadm5/admin.h>
-#include <adm_proto.h>
+#include <krb5/adm_proto.h>
 #include "kadmin.h"
+#include <krb5.h>
 
 static int add_principal(void *lhandle, char *keytab_str, krb5_keytab keytab,
 			 krb5_boolean keepold,
@@ -52,6 +58,7 @@ static int add_principal(void *lhandle, char *keytab_str, krb5_keytab keytab,
 static int remove_principal(char *keytab_str, krb5_keytab keytab, char
 			    *princ_str, char *kvno_str);
 static char *etype_string(krb5_enctype enctype);
+static char *etype_istring(krb5_enctype enctype);
 
 static int quiet;
 
@@ -62,27 +69,41 @@ static int norandkey;
 static void add_usage()
 {
 #ifdef KADMIN_LOCAL
-     fprintf(stderr, "Usage: ktadd [-k[eytab] keytab] [-q] [-e keysaltlist] [-norandkey] [principal | -glob princ-exp] [...]\n");
+     fprintf(stderr, "%s: %s\n", gettext("Usage"),
+	"ktadd [-k[eytab] keytab] [-q] [-e keysaltlist] [-norandkey] "
+	"[principal | -glob princ-exp] [...]\n");
 #else
-     fprintf(stderr, "Usage: ktadd [-k[eytab] keytab] [-q] [-e keysaltlist] [principal | -glob princ-exp] [...]\n");
+     fprintf(stderr, "%s: %s\n", gettext("Usage"),
+	"ktadd [-k[eytab] keytab] [-q] [-e keysaltlist] "
+	"[principal | -glob princ-exp] [...]\n");
 #endif
 }
      
 static void rem_usage()
 {
-     fprintf(stderr, "Usage: ktremove [-k[eytab] keytab] [-q] principal [kvno|\"all\"|\"old\"]\n");
+	fprintf(stderr, "%s: %s\n",
+	    gettext("Usage"),
+	    "ktremove [-k[eytab] keytab] [-q] principal "
+	    "[kvno|\"all\"|\"old\"]\n");
 }
 
 static int process_keytab(krb5_context my_context, char **keytab_str,
 		   krb5_keytab *keytab) 
 {
      int code;
+     char buf[BUFSIZ];
      
      if (*keytab_str == NULL) {
-	  /* XXX krb5_defkeyname is an internal library global and
-             should go away */
-	  if (! (*keytab_str = strdup(krb5_defkeyname))) {
-	       com_err(whoami, ENOMEM, "while creating keytab name");
+	if (code = krb5_kt_default(my_context, keytab)) {
+		com_err(whoami, code, gettext("while opening default keytab"));
+		return 1;
+	}
+	if (code = krb5_kt_get_name(my_context, *keytab, buf, BUFSIZ)) {
+		com_err(whoami, code, gettext("while retrieving keytab name"));
+		return 1;
+	}
+	if (!(*keytab_str = strdup(buf))) {
+		com_err(whoami, ENOMEM, gettext("while creating keytab name"));
 	       return 1;
 	  }
 	  code = krb5_kt_default(my_context, keytab);
@@ -95,20 +116,23 @@ static int process_keytab(krb5_context my_context, char **keytab_str,
 	  if (strchr(*keytab_str, ':') != NULL) {
 	       *keytab_str = strdup(*keytab_str);
 	       if (*keytab_str == NULL) {
-		    com_err(whoami, ENOMEM, "while creating keytab name");
+				com_err(whoami, ENOMEM,
+				    gettext("while creating keytab name"));
 		    return 1;
 	       }
 	  } else {
 	       if (asprintf(keytab_str, "WRFILE:%s", *keytab_str) < 0) {
 		   *keytab_str = NULL;
-		   com_err(whoami, ENOMEM, "while creating keytab name");
+				com_err(whoami, ENOMEM,
+				    gettext("while creating keytab name"));
 		   return 1;
 	       }
 	  }
 	  
 	  code = krb5_kt_resolve(my_context, *keytab_str, keytab);
 	  if (code != 0) {
-	       com_err(whoami, code, "while resolving keytab %s", *keytab_str);
+			com_err(whoami, code,
+			    gettext("while resolving keytab %s"), *keytab_str);
 	       free(keytab_str);
 	       return 1;
 	  }
@@ -156,7 +180,8 @@ void kadmin_keytab_add(int argc, char **argv)
 	       retval = krb5_string_to_keysalts(*++argv, ", \t", ":.-", 0,
 						&ks_tuple, &n_ks_tuple);
 	       if (retval) {
-		    com_err("ktadd", retval, "while parsing keysalts %s",
+		    com_err("ktadd", retval,
+			    gettext("while parsing keysalts %s"),
 			    *argv);
 
 		    return;
@@ -190,7 +215,9 @@ void kadmin_keytab_add(int argc, char **argv)
 	       
 	       code = kadm5_get_principals(handle, *argv, &princs, &num);
 	       if (code) {
-		    com_err(whoami, code, "while expanding expression \"%s\".",
+				com_err(whoami, code,
+					gettext("while expanding expression "
+						"\"%s\"."),
 			    *argv);
 		    argv++;
 		    continue;
@@ -210,7 +237,7 @@ void kadmin_keytab_add(int argc, char **argv)
 	  
      code = krb5_kt_close(context, keytab);
      if (code != 0)
-	  com_err(whoami, code, "while closing keytab");
+		com_err(whoami, code, gettext("while closing keytab"));
 
      free(keytab_str);
 }
@@ -249,7 +276,7 @@ void kadmin_keytab_remove(int argc, char **argv)
 
      code = krb5_kt_close(context, keytab);
      if (code != 0)
-	  com_err(whoami, code, "while closing keytab");
+		com_err(whoami, code, gettext("while closing keytab"));
 
      free(keytab_str);
 }
@@ -265,6 +292,8 @@ int add_principal(void *lhandle, char *keytab_str, krb5_keytab keytab,
      krb5_keytab_entry new_entry;
      krb5_keyblock *keys;
      int code, nkeys, i;
+     int nktypes = 0;
+     krb5_key_salt_tuple *permitted_etypes = NULL;
 
      (void) memset((char *)&princ_rec, 0, sizeof(princ_rec));
 
@@ -274,9 +303,52 @@ int add_principal(void *lhandle, char *keytab_str, krb5_keytab keytab,
 
      code = krb5_parse_name(context, princ_str, &princ);
      if (code != 0) {
-	  com_err(whoami, code, "while parsing -add principal name %s",
+		com_err(whoami, code,
+		    gettext("while parsing -add principal name %s"),
 		  princ_str);
 	  goto cleanup;
+     }
+
+     if (ks_tuple == NULL) {
+	krb5_enctype *ptr, *ktypes = NULL;
+
+	code = krb5_get_permitted_enctypes(context, &ktypes);
+	if (!code && ktypes && *ktypes) {
+		krb5_int32 salttype;
+		/*
+		 * Count the results.  This is stupid, the API above
+		 * should have included an output param to indicate
+	 	 * the size of the list that is returned.
+		 */
+		for (ptr = ktypes; *ptr; ptr++) nktypes++;
+
+		/* Allocate a new key-salt tuple set */
+		permitted_etypes = (krb5_key_salt_tuple *)malloc (
+			sizeof (krb5_key_salt_tuple) * nktypes);
+		if (permitted_etypes == NULL) {
+			free(ktypes);
+			return (ENOMEM);
+		}
+
+		/*
+		 * Because the keysalt parameter doesn't matter for
+		 * keys stored in the keytab, use the default "normal"
+		 * salt for all keys
+		 */
+		(void) krb5_string_to_salttype("normal", &salttype);
+		for (i = 0; i < nktypes; i++) {
+			permitted_etypes[i].ks_enctype = ktypes[i];
+			permitted_etypes[i].ks_salttype = salttype;
+		}
+		free(ktypes);
+	} else {
+		if (ktypes)
+			free(ktypes);
+		goto cleanup;
+	}
+     } else {
+	permitted_etypes = ks_tuple;
+	nktypes = n_ks_tuple;
      }
 
 #ifdef KADMIN_LOCAL
@@ -286,25 +358,59 @@ int add_principal(void *lhandle, char *keytab_str, krb5_keytab keytab,
 #endif
      if (keepold || ks_tuple != NULL) {
 	 code = kadm5_randkey_principal_3(lhandle, princ,
-					  keepold, n_ks_tuple, ks_tuple,
+					  keepold, nktypes, permitted_etypes,
 					  &keys, &nkeys);
      } else {
 	 code = kadm5_randkey_principal(lhandle, princ, &keys, &nkeys);
      }
+
+#ifndef _KADMIN_LOCAL_
+	/* this block is not needed in the kadmin.local client */
+
+	/*
+	 * If the above call failed, we may be talking to an older
+	 * admin server, so try the older API.
+	 */
+	if (code == KADM5_RPC_ERROR) {
+		code = kadm5_randkey_principal_old(handle, princ, &keys, &nkeys);
+	}
+#endif /* !KADMIN_LOCAL */
      if (code != 0) {
 	  if (code == KADM5_UNK_PRINC) {
-	       fprintf(stderr, "%s: Principal %s does not exist.\n",
+			fprintf(stderr,
+			    gettext("%s: Principal %s does not exist.\n"),
 		       whoami, princ_str);
-	  } else
-	       com_err(whoami, code, "while changing %s's key",
+	/* Solaris Kerberos: Better error messages */
+	  } else if (code == KRB5_BAD_ENCTYPE) {
+			int i, et;
+			fprintf(stderr, gettext("%s: Error from the remote system: "
+			    "%s while changing %s's key\n"), whoami,
+			    error_message(code), princ_str);
+			if (nktypes) {
+				et = permitted_etypes[0].ks_enctype;
+				fprintf(stderr, gettext("%s: Encryption types "
+				    "requested: %s (%d)"), whoami,
+				    etype_istring(et), et);
+
+				for (i = 1; i < nktypes; i++) {
+					et = permitted_etypes[i].ks_enctype;
+					fprintf(stderr, ", %s (%d)",
+					    etype_istring(et), et);
+				}
+				fprintf(stderr, "\n");
+			}
+	  } else {
+			com_err(whoami, code,
+				gettext("while changing %s's key"),
 		       princ_str);
+	  }
 	  goto cleanup;
      }
 
      code = kadm5_get_principal(lhandle, princ, &princ_rec,
 				KADM5_PRINCIPAL_NORMAL_MASK);
      if (code != 0) {
-	  com_err(whoami, code, "while retrieving principal");
+		com_err(whoami, code, gettext("while retrieving principal"));
 	  goto cleanup;
      }
 
@@ -316,21 +422,22 @@ int add_principal(void *lhandle, char *keytab_str, krb5_keytab keytab,
 
 	  code = krb5_kt_add_entry(context, keytab, &new_entry);
 	  if (code != 0) {
-	       com_err(whoami, code, "while adding key to keytab");
+			com_err(whoami, code,
+				gettext("while adding key to keytab"));
 	       (void) kadm5_free_principal_ent(lhandle, &princ_rec);
 	       goto cleanup;
 	  }
 
 	  if (!quiet)
-	       printf("Entry for principal %s with kvno %d, "
-		      "encryption type %s added to keytab %s.\n",
+			printf(gettext("Entry for principal %s with kvno %d, "
+				"encryption type %s added to keytab %s.\n"),
 		      princ_str, princ_rec.kvno,
 		      etype_string(keys[i].enctype), keytab_str);
      }
 
      code = kadm5_free_principal_ent(lhandle, &princ_rec);
      if (code != 0) {
-	  com_err(whoami, code, "while freeing principal entry");
+		com_err(whoami, code, gettext("while freeing principal entry"));
 	  goto cleanup;
      }
 
@@ -342,6 +449,9 @@ cleanup:
      }
      if (princ)
 	  krb5_free_principal(context, princ);
+
+     if (permitted_etypes != NULL && ks_tuple == NULL)
+	free(permitted_etypes);
 
      return code;
 }
@@ -358,7 +468,8 @@ int remove_principal(char *keytab_str, krb5_keytab keytab, char
 
      code = krb5_parse_name(context, princ_str, &princ);
      if (code != 0) {
-	  com_err(whoami, code, "while parsing principal name %s",
+		com_err(whoami, code,
+			gettext("while parsing principal name %s"),
 		  princ_str);
 	  return code;
      }
@@ -382,21 +493,25 @@ int remove_principal(char *keytab_str, krb5_keytab keytab, char
      code = krb5_kt_get_entry(context, keytab, princ, kvno, 0, &entry);
      if (code != 0) {
 	  if (code == ENOENT) {
-	       fprintf(stderr, "%s: Keytab %s does not exist.\n",
+			fprintf(stderr,
+				gettext("%s: Keytab %s does not exist.\n"),
 		       whoami, keytab_str);
 	  } else if (code == KRB5_KT_NOTFOUND) {
 	       if (mode != SPEC)
-		    fprintf(stderr, "%s: No entry for principal "
-			    "%s exists in keytab %s\n",
+				fprintf(stderr,
+					gettext("%s: No entry for principal "
+						"%s exists in keytab %s\n"),
 			    whoami, princ_str, keytab_str);
 	       else
-		    fprintf(stderr, "%s: No entry for principal "
-			    "%s with kvno %d exists in keytab "
-			    "%s.\n", whoami, princ_str, kvno,
-			    keytab_str);
+				fprintf(stderr,
+					gettext("%s: No entry for principal "
+						"%s with kvno %d exists in "
+						"keytab %s.\n"),
+					whoami, princ_str, kvno, keytab_str);
 	  } else {
-	       com_err(whoami, code, "while retrieving highest kvno "
-		       "from keytab");
+			com_err(whoami, code,
+				gettext("while retrieving highest "
+					"kvno from keytab"));
 	  }
 	  return code;
      }
@@ -407,7 +522,7 @@ int remove_principal(char *keytab_str, krb5_keytab keytab, char
 
      code = krb5_kt_start_seq_get(context, keytab, &cursor);
      if (code != 0) {
-	  com_err(whoami, code, "while starting keytab scan");
+		com_err(whoami, code, gettext("while starting keytab scan"));
 	  return code;
      }
 
@@ -426,35 +541,40 @@ int remove_principal(char *keytab_str, krb5_keytab keytab, char
 		*/
 	       code = krb5_kt_end_seq_get(context, keytab, &cursor);
 	       if (code != 0) {
-		    com_err(whoami, code, "while temporarily ending "
-			    "keytab scan");
+				com_err(whoami, code,
+					gettext("while temporarily "
+						"ending keytab scan"));
 		    return code;
 	       }
 	       code = krb5_kt_remove_entry(context, keytab, &entry);
 	       if (code != 0) {
-		    com_err(whoami, code, "while deleting entry from keytab");
+				com_err(whoami, code,
+					gettext("while deleting entry "
+						"from keytab"));
 		    return code;
 	       }
 	       code = krb5_kt_start_seq_get(context, keytab, &cursor);
 	       if (code != 0) {
-		    com_err(whoami, code, "while restarting keytab scan");
+				com_err(whoami, code,
+				    gettext("while restarting keytab scan"));
 		    return code;
 	       }
 
 	       did_something++;
 	       if (!quiet)
-		    printf("Entry for principal %s with kvno %d "
-			   "removed from keytab %s.\n", 
+				printf(gettext("Entry for principal "
+					    "%s with kvno %d "
+					    "removed from keytab %s.\n"),
 			   princ_str, entry.vno, keytab_str);
 	  }
 	  krb5_kt_free_entry(context, &entry);
      }
      if (code && code != KRB5_KT_END) {
-	  com_err(whoami, code, "while scanning keytab");
+		com_err(whoami, code, gettext("while scanning keytab"));
 	  return code;
      }
      if ((code = krb5_kt_end_seq_get(context, keytab, &cursor))) {
-	  com_err(whoami, code, "while ending keytab scan");
+		com_err(whoami, code, gettext("while ending keytab scan"));
 	  return code;
      }
 
@@ -464,8 +584,10 @@ int remove_principal(char *keytab_str, krb5_keytab keytab, char
       * prevent unexpected error messages...
       */
      if (!did_something && mode == OLD) {
-	  fprintf(stderr, "%s: There is only one entry for principal "
-		  "%s in keytab %s\n", whoami, princ_str, keytab_str);
+		fprintf(stderr,
+		    gettext("%s: There is only one entry for principal "
+			"%s in keytab %s\n"),
+		    whoami, princ_str, keytab_str);
 	  return 1;
      }
      
@@ -487,4 +609,15 @@ static char *etype_string(enctype)
 	snprintf(buf, sizeof(buf), "etype %d", enctype);
 
     return buf;
+}
+
+/* Solaris Kerberos */
+static char *etype_istring(krb5_enctype enctype) {
+    static char buf[100];
+    krb5_error_code ret;
+
+    if ((ret = krb5_enctype_to_istring(enctype, buf, sizeof(buf))))
+	sprintf(buf, "unknown", enctype);
+
+    return (buf);
 }

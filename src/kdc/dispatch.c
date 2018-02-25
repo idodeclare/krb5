@@ -1,4 +1,9 @@
 /*
+ * Copyright 2008 Sun Microsystems, Inc.  All rights reserved.
+ * Use is subject to license terms.
+ */
+
+/*
  * kdc/dispatch.c
  *
  * Copyright 1990 by the Massachusetts Institute of Technology.
@@ -54,7 +59,7 @@ dispatch(krb5_data *pkt, const krb5_fulladdr *from, krb5_data **response)
 	const char *name = 0;
 	char buf[46];
 
-	name = inet_ntop (ADDRTYPE2FAMILY (from->address->addrtype),
+	name = (char *) inet_ntop (ADDRTYPE2FAMILY (from->address->addrtype),
 			  from->address->contents, buf, sizeof (buf));
 	if (name == 0)
 	    name = "[unknown address type]";
@@ -64,6 +69,8 @@ dispatch(krb5_data *pkt, const krb5_fulladdr *from, krb5_data **response)
 	return 0;
     }
 #endif
+/* SUNW14resync XXX */
+#if 0
     retval = krb5_crypto_us_timeofday(&now, &now_usec);
     if (retval == 0) {
       krb5_int32 usec_difference = now_usec-last_usec;
@@ -83,6 +90,7 @@ dispatch(krb5_data *pkt, const krb5_fulladdr *from, krb5_data **response)
 				KRB5_C_RANDSOURCE_TIMING, &data);
       last_usec = now_usec;
     }
+#endif
     /* try TGS_REQ first; they are more common! */
 
     if (krb5_is_tgs_req(pkt)) {

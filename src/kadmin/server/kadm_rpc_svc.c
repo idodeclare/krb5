@@ -1,21 +1,46 @@
 /*
+ * Copyright 2008 Sun Microsystems, Inc.  All rights reserved.
+ * Use is subject to license terms.
+ */
+
+
+/*
+ * WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING
+ *
+ *	Openvision retains the copyright to derivative works of
+ *	this source code.  Do *NOT* create a derivative of this
+ *	source code before consulting with your legal department.
+ *	Do *NOT* integrate *ANY* of this source code into another
+ *	product before consulting with your legal department.
+ *
+ *	For further information, read the top-level Openvision
+ *	copyright which is contained in the top-level MIT Kerberos
+ *	copyright.
+ *
+ * WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING
+ *
+ */
+
+
+/*
  * Copyright 1993 OpenVision Technologies, Inc., All Rights Reserved.
  *
  */
 
+#include <kadm5/admin.h>
 #include <stdio.h>
-#include <gssrpc/rpc.h>
-#include <gssapi/gssapi_krb5.h> /* for gss_nt_krb5_name */
+#include <rpc/rpc.h>    /* SUNWresync 121 XXX */
+#include <gssapi_krb5.h> /* for gss_nt_krb5_name */
 #include <syslog.h>
 #include <string.h>
-#include "autoconf.h"
 #ifdef HAVE_MEMORY_H
 #include <memory.h>
 #endif
+#include <rpc/rpcsec_gss.h>
 #include <kadm5/kadm_rpc.h>
 #include <krb5.h>
-#include <kadm5/admin.h>
-#include <adm_proto.h>
+#include <libintl.h>
+#include <krb5/adm_proto.h>
 #ifdef HAVE_ARPA_INET_H
 #include <arpa/inet.h>
 #endif
@@ -23,6 +48,9 @@
 #include "kadm5/server_internal.h"
 
 extern void *global_server_handle;
+
+void log_badauth(OM_uint32 major, OM_uint32 minor,
+		 struct sockaddr_in *addr, char *data);
 
 static int check_rpcsec_auth(struct svc_req *);
 
@@ -71,9 +99,11 @@ void kadm_1(rqstp, transp)
      char *(*local)();
 
      if (rqstp->rq_cred.oa_flavor != AUTH_GSSAPI &&
+	 rqstp->rq_cred.oa_flavor != RPCSEC_GSS &&
 	 !check_rpcsec_auth(rqstp)) {
-	  krb5_klog_syslog(LOG_ERR, "Authentication attempt failed: %s, "
-		 "RPC authentication flavor %d",
+		krb5_klog_syslog(LOG_ERR,
+		    gettext("Authentication attempt failed: %s "
+			"RPC authentication flavor %d"),
 		 inet_ntoa(rqstp->rq_xprt->xp_raddr.sin_addr),
 		 rqstp->rq_cred.oa_flavor);
 	  svcerr_weakauth(transp);
@@ -127,11 +157,13 @@ void kadm_1(rqstp, transp)
 	  local = (char *(*)()) chpass_principal_2_svc;
 	  break;
 
+#ifdef SUNWOFF
      case SETV4KEY_PRINCIPAL:
 	  xdr_argument = xdr_setv4key_arg;
 	  xdr_result = xdr_generic_ret;
 	  local = (char *(*)()) setv4key_principal_2_svc;
 	  break;
+#endif
 
      case SETKEY_PRINCIPAL:
 	  xdr_argument = xdr_setkey_arg;
@@ -212,26 +244,29 @@ void kadm_1(rqstp, transp)
 	  break;
 
      default:
-	  krb5_klog_syslog(LOG_ERR, "Invalid KADM5 procedure number: %s, %d",
+	  krb5_klog_syslog(LOG_ERR,
+		    gettext("Invalid KADM5 procedure number: %s, %d"),
 		 inet_ntoa(rqstp->rq_xprt->xp_raddr.sin_addr),
 		 rqstp->rq_proc);
 	  svcerr_noproc(transp);
 	  return;
      }
      memset((char *)&argument, 0, sizeof(argument));
-     if (!svc_getargs(transp, xdr_argument, &argument)) {
+     if (!svc_getargs(transp, xdr_argument, (char *) &argument)) {
 	  svcerr_decode(transp);
 	  return;
      }
      result = (*local)(&argument, rqstp);
-     if (result != NULL && !svc_sendreply(transp, xdr_result, result)) {
-	  krb5_klog_syslog(LOG_ERR, "WARNING! Unable to send function results, "
-		 "continuing.");
+     if (result != NULL && !svc_sendreply(transp, xdr_result, (char *) result)) {
+		krb5_klog_syslog(LOG_ERR,
+		    gettext("WARNING! Unable to send function results, "
+			    "continuing."));
 	  svcerr_systemerr(transp);
      }
-     if (!svc_freeargs(transp, xdr_argument, &argument)) {
-	  krb5_klog_syslog(LOG_ERR, "WARNING! Unable to free arguments, "
-		 "continuing.");
+     if (!svc_freeargs(transp, xdr_argument, (char *) &argument)) {
+	  krb5_klog_syslog(LOG_ERR,
+		    gettext("WARNING! Unable to free arguments, "
+			"continuing."));
      }
      return;
 }
@@ -263,7 +298,7 @@ check_rpcsec_auth(struct svc_req *rqstp)
 				    NULL, NULL, NULL, NULL, NULL);
      if (maj_stat != GSS_S_COMPLETE) {
 	  krb5_klog_syslog(LOG_ERR, "check_rpcsec_auth: "
-			   "failed inquire_context, stat=%u", maj_stat);
+	      gettext("failed inquire_context, stat=%u"), maj_stat);
 	  log_badauth(maj_stat, min_stat,
 		      &rqstp->rq_xprt->xp_raddr, NULL);
 	  goto fail_name;
@@ -298,7 +333,7 @@ check_rpcsec_auth(struct svc_req *rqstp)
 
 fail_princ:
      if (!success) {
-	 krb5_klog_syslog(LOG_ERR, "bad service principal %.*s%s",
+	 krb5_klog_syslog(LOG_ERR, gettext("bad service principal %.*s%s"),
 			  (int) slen, (char *) gss_str.value, sdots);
      }
      gss_release_buffer(&min_stat, &gss_str);
@@ -321,7 +356,7 @@ gss_to_krb5_name_1(struct svc_req *rqstp, krb5_context ctx, gss_name_t gss_name,
      if ((status != GSS_S_COMPLETE) || (gss_type != gss_nt_krb5_name)) {
 	  krb5_klog_syslog(LOG_ERR,
 			   "gss_to_krb5_name: "
-			   "failed display_name status %d", status);
+			   gettext("failed display_name status %d"), status);
 	  log_badauth(status, minor_stat,
 		      &rqstp->rq_xprt->xp_raddr, NULL);
 	  return 0;

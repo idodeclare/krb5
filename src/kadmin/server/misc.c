@@ -1,12 +1,34 @@
 /*
+ * Copyright (c) 2001, 2010, Oracle and/or its affiliates. All rights reserved.
+ */
+
+/*
+ * WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING
+ *
+ *	Openvision retains the copyright to derivative works of
+ *	this source code.  Do *NOT* create a derivative of this
+ *	source code before consulting with your legal department.
+ *	Do *NOT* integrate *ANY* of this source code into another
+ *	product before consulting with your legal department.
+ *
+ *	For further information, read the top-level Openvision
+ *	copyright which is contained in the top-level MIT Kerberos
+ *	copyright.
+ *
+ * WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING
+ *
+ */
+
+/*
  * Copyright 1993 OpenVision Technologies, Inc., All Rights Reserved
  *
  */
 
 #include    <k5-int.h>
-#include    <kdb.h>
+#include    <krb5/kdb.h>
 #include    <kadm5/server_internal.h>
 #include    <kadm5/server_acl.h>
+#include    <kadm5/admin.h>
 #include    "misc.h"
 
 /*
@@ -44,7 +66,8 @@ chpass_principal_wrapper_3(void *server_handle,
 {
     kadm5_ret_t			ret;
 
-    ret = check_min_life(server_handle, principal, NULL, 0);
+    /* Solaris Kerberos */
+    ret = kadm5_check_min_life(server_handle, principal, NULL, 0);
     if (ret)
 	 return ret;
 
@@ -87,7 +110,8 @@ randkey_principal_wrapper_3(void *server_handle,
 {
     kadm5_ret_t			ret;
 
-    ret = check_min_life(server_handle, principal, NULL, 0);
+    /* Solaris Kerberos */
+    ret = kadm5_check_min_life(server_handle, principal, NULL, 0);
     if (ret)
 	 return ret;
     return kadm5_randkey_principal_3(server_handle, principal,
@@ -122,13 +146,14 @@ schpw_util_wrapper(void *server_handle,
      */
     self = krb5_principal_compare(handle->context, client, target);
     if (self) {
-	ret = check_min_life(server_handle, target, msg_ret, msg_len);
-	if (ret != 0)
-	    return ret;
-
+	    /* Solaris Kerberos */
+	    ret = kadm5_check_min_life(server_handle, princ, msg_ret, msg_len);
+	    if (ret != 0)
+		return ret;
 	access_granted = initial_flag;
-    } else
+    } else {
 	access_granted = FALSE;
+    }
 
     if (!access_granted &&
 	kadm5int_acl_check_krb(handle->context, client,
@@ -147,7 +172,7 @@ schpw_util_wrapper(void *server_handle,
 					  msg_ret, msg_len);
     } else {
 	ret = KADM5_AUTH_CHANGEPW;
-	strlcpy(msg_ret, "Unauthorized request", msg_len);
+	strlcpy(msg_ret, gettext("Unauthorized request"), msg_len);
     }
 
     return ret;
@@ -222,4 +247,18 @@ trunc_name(size_t *len, char **dots)
 {
     *dots = *len > MAXPRINCLEN ? "..." : "";
     *len = *len > MAXPRINCLEN ? MAXPRINCLEN : *len;
+}
+
+kadm5_ret_t
+randkey_principal_wrapper(void *server_handle, krb5_principal princ,
+			  krb5_keyblock ** keys, int *n_keys)
+{
+    kadm5_ret_t ret;
+
+    /* Solaris Kerberos */
+    ret = kadm5_check_min_life(server_handle, princ, NULL, 0);
+	if (ret)
+	    return ret;
+
+    return kadm5_randkey_principal(server_handle, princ, keys, n_keys);
 }

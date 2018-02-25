@@ -1,7 +1,11 @@
 /*
+ * Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
+ * Use is subject to license terms.
+ */
+
+/*
  * Copyright 1993 OpenVision Technologies, Inc., All Rights Reserved.
  *
- * $Source$
  */
 
 /*
@@ -39,17 +43,25 @@
 #include <k5-int.h>
 #include <kdb.h>
 #include <kadm5/admin.h>
-#include <adm_proto.h>
+#include <krb5/adm_proto.h>
 
 #include "fake-addrinfo.h"
 
 
 #include <krb5.h>
-#include <kdb.h>
+#include <krb5/kdb.h>
 #include "kdb5_util.h"
+#include <libintl.h>
+
+static int add_admin_old_princ(void *handle, krb5_context context,
+		    char *name, char *realm, int attrs, int lifetime);
+
+static int add_admin_sname_princ(void *handle, krb5_context context,
+    char *sname, int attrs, int lifetime);
 
 static int add_admin_princ(void *handle, krb5_context context,
-		    char *name, char *realm, int attrs, int lifetime);
+    krb5_principal principal, int attrs, int lifetime);
+
 static int add_admin_princs(void *handle, krb5_context context, char *realm);
 
 #define ERR 1
@@ -57,6 +69,8 @@ static int add_admin_princs(void *handle, krb5_context context, char *realm);
 
 #define ADMIN_LIFETIME 60*60*3 /* 3 hours */
 #define CHANGEPW_LIFETIME 60*5 /* 5 minutes */
+
+extern char *progname;
 
 /*
  * Function: kadm5_create
@@ -79,13 +93,15 @@ int kadm5_create(kadm5_config_params *params)
      if ((retval = kadm5_init_krb5_context(&context)))
 	  exit(ERR);
 
+     (void) memset(&lparams, 0, sizeof (kadm5_config_params));
+
      /*
       * The lock file has to exist before calling kadm5_init, but
       * params->admin_lockfile may not be set yet...
       */
      if ((retval = kadm5_get_config_params(context, 1,
 					   params, &lparams))) {
-	  com_err(progname, retval, "while looking up the Kerberos configuration");
+	com_err(progname, retval, gettext("while looking up the Kerberos configuration"));
 	  return 1;
      }
 
@@ -111,7 +127,7 @@ int kadm5_create_magic_princs(kadm5_config_params *params,
 			      KADM5_API_VERSION_2,
 			      db5util_db_args,
 			      &handle))) {
-	  com_err(progname, retval, "while initializing the Kerberos admin interface");
+	com_err(progname, retval,  gettext("while initializing the Kerberos admin interface"));
 	  return retval;
      }
 
@@ -221,25 +237,53 @@ static int add_admin_princs(void *handle, krb5_context context, char *realm)
   }
   freeaddrinfo(ai);
 
+/*
+ * Solaris Kerberos:
+ * The kadmin/admin principal is unused on Solaris. This principal is used
+ * in AUTH_GSSAPI but Solaris doesn't support AUTH_GSSAPI. RPCSEC_GSS can only
+ * be used with host-based principals. 
+ *
+ */ 
+
+#if 0
   if ((ret = add_admin_princ(handle, context,
 			     service_name, realm,
 			     KRB5_KDB_DISALLOW_TGT_BASED,
 			     ADMIN_LIFETIME)))
       goto clean_and_exit;
-
   if ((ret = add_admin_princ(handle, context,
 			     KADM5_ADMIN_SERVICE, realm,
 			     KRB5_KDB_DISALLOW_TGT_BASED,
 			     ADMIN_LIFETIME)))
        goto clean_and_exit;
+#endif 
 
-  if ((ret = add_admin_princ(handle, context, 
+	if ((ret = add_admin_old_princ(handle, context,
 			     KADM5_CHANGEPW_SERVICE, realm, 
 			     KRB5_KDB_DISALLOW_TGT_BASED |
 			     KRB5_KDB_PWCHANGE_SERVICE,
 			     CHANGEPW_LIFETIME)))
        goto clean_and_exit;
   
+	if ((ret = add_admin_sname_princ(handle, context,
+		    KADM5_ADMIN_HOST_SERVICE,
+		    KRB5_KDB_DISALLOW_TGT_BASED,
+		    ADMIN_LIFETIME)))
+		goto clean_and_exit;
+
+	if ((ret = add_admin_sname_princ(handle, context,
+		    KADM5_CHANGEPW_HOST_SERVICE,
+		    KRB5_KDB_DISALLOW_TGT_BASED |
+		    KRB5_KDB_PWCHANGE_SERVICE,
+		    ADMIN_LIFETIME)))
+		goto clean_and_exit;
+
+	if ((ret = add_admin_sname_princ(handle, context,
+		    KADM5_KIPROP_HOST_SERVICE,
+		    KRB5_KDB_DISALLOW_TGT_BASED,
+		    ADMIN_LIFETIME)))
+		goto clean_and_exit;
+
 clean_and_exit:
   free(service_name);
 
@@ -275,8 +319,8 @@ clean_and_exit:
  * attributes attrs and max life of lifetime (if not zero).
  */
 
-int add_admin_princ(void *handle, krb5_context context,
-		    char *name, char *realm, int attrs, int lifetime)
+static int add_admin_princ(void *handle, krb5_context context,
+    char *name, char *realm, int attrs, int lifetime)
 {
      char *fullname;
      krb5_error_code ret;
@@ -299,16 +343,73 @@ int add_admin_princ(void *handle, krb5_context context,
 				  "to-be-random");
      if (ret) {
 	  if (ret != KADM5_DUP) {
-	       com_err(progname, ret, str_PUT_PRINC, fullname);
+	       com_err(progname, ret,
+			gettext(str_PUT_PRINC), fullname);
 	       krb5_free_principal(context, ent.principal);
 	       free(fullname);
 	       return ERR;
 	  }
      } else {
 	  /* only randomize key if we created the principal */
-	  ret = kadm5_randkey_principal(handle, ent.principal, NULL, NULL);
+
+	  /*
+	   * Solaris Kerberos:
+	   * Create kadmind principals with keys for all supported encryption types.
+	   * Follows a similar pattern to add_principal() in keytab.c.
+	   */
+	  krb5_enctype *tmpenc, *enctype = NULL;
+	  krb5_key_salt_tuple *keysalt;
+	  int num_ks, i;
+	  krb5_int32 normalsalttype;
+
+	  ret = krb5_get_permitted_enctypes(context, &enctype);
+	  if (ret || *enctype == NULL) {
+	       com_err(progname, ret,
+		   gettext("while getting list of permitted encryption types"));
+	       krb5_free_principal(context, ent.principal);
+	       free(fullname);
+	       return ERR;
+	  }
+
+	  /* Count the number of enc types */
+	  for (tmpenc = enctype, num_ks = 0; *tmpenc; tmpenc++)
+		num_ks++;
+
+	  keysalt = malloc (sizeof (krb5_key_salt_tuple) * num_ks);
+	  if (keysalt == NULL) {
+	       com_err(progname, ENOMEM,
+		   gettext("while generating list of key salt tuples"));
+	       krb5_free_ktypes(context, enctype);
+	       krb5_free_principal(context, ent.principal);
+	       free(fullname);
+	       return ERR;
+	  }
+
+	  ret = krb5_string_to_salttype("normal", &normalsalttype);
 	  if (ret) {
-	       com_err(progname, ret, str_RANDOM_KEY, fullname);
+	  	com_err(progname, ret,
+	  	 	gettext("while converting \"normal\" to a salttype"));
+		free(keysalt);
+		krb5_free_ktypes(context, enctype);
+	  	krb5_free_principal(context, ent.principal);
+	  	free(fullname);
+	  	return ERR;
+	  }
+
+	  /* Only create keys with "normal" salttype */
+	  for (i = 0; i < num_ks; i++) {
+		keysalt[i].ks_enctype = enctype[i];
+		keysalt[i].ks_salttype = normalsalttype;
+	  }
+
+	  ret = kadm5_randkey_principal_3(handle, ent.principal, FALSE, num_ks,
+	      keysalt, NULL, NULL);
+	  free(keysalt);
+          krb5_free_ktypes (context, enctype);
+
+	  if (ret) {
+	       com_err(progname, ret,
+			gettext(str_RANDOM_KEY), fullname);
 	       krb5_free_principal(context, ent.principal);
 	       free(fullname);
 	       return ERR;
@@ -317,7 +418,8 @@ int add_admin_princ(void *handle, krb5_context context,
 	  ent.attributes = attrs;
 	  ret = kadm5_modify_principal(handle, &ent, KADM5_ATTRIBUTES);
 	  if (ret) {
-	       com_err(progname, ret, str_PUT_PRINC, fullname);
+	      com_err(progname, ret,
+	       gettext(str_PUT_PRINC), fullname);
 	       krb5_free_principal(context, ent.principal);
 	       free(fullname);
 	       return ERR;
@@ -328,4 +430,38 @@ int add_admin_princ(void *handle, krb5_context context,
      free(fullname);
 
      return OK;
+}
+
+int
+add_admin_old_princ(void *handle, krb5_context context,
+    char *name, char *realm, int attrs, int lifetime)
+{
+	char *fullname;
+	krb5_error_code ret;
+	krb5_principal principal;
+
+	fullname = build_name_with_realm(name, realm);
+	if (ret = krb5_parse_name(context, fullname, &principal)) {
+		com_err(progname, ret, gettext(str_PARSE_NAME));
+		return (ERR);
+	}
+
+	return (add_admin_princ(handle, context, principal, attrs, lifetime));
+}
+
+int
+add_admin_sname_princ(void *handle, krb5_context context,
+	     char *sname, int attrs, int lifetime)
+{
+	krb5_error_code ret;
+	krb5_principal principal;
+
+	if (ret = krb5_sname_to_principal(context, NULL, sname,
+					  KRB5_NT_SRV_HST, &principal)) {
+		com_err(progname, ret,
+			gettext("Could not get host based "
+				"service name for %s principal\n"), sname);
+		return (ERR);
+	}
+	return (add_admin_princ(handle, context, principal, attrs, lifetime));
 }

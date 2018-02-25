@@ -37,7 +37,7 @@ long read_old_password(krb5_context context, char *password,
 
 long read_new_password(void *server_handle, char *password, 
 		       unsigned int *pwsize, char *msg_ret, 
-		       krb5_principal princ);
+		       int msg_len, krb5_principal princ);
 
 void display_intro_message(const char *fmt_string, const char *arg_string);
 

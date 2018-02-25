@@ -1,4 +1,32 @@
 /*
+ * Copyright (c) 2001, 2010, Oracle and/or its affiliates. All rights reserved.
+ */
+
+#ifndef _MISC_H
+#define	_MISC_H
+
+
+#ifdef	__cplusplus
+extern "C" {
+#endif
+
+/*
+ * WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING
+ *
+ *	Openvision retains the copyright to derivative works of
+ *	this source code.  Do *NOT* create a derivative of this
+ *	source code before consulting with your legal department.
+ *	Do *NOT* integrate *ANY* of this source code into another
+ *	product before consulting with your legal department.
+ *
+ *	For further information, read the top-level Openvision
+ *	copyright which is contained in the top-level MIT Kerberos
+ *	copyright.
+ *
+ * WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING
+ *
+ */
+/*
  * Copyright 1994 OpenVision Technologies, Inc., All Rights Reserved
  *
  */
@@ -61,7 +89,9 @@ krb5_error_code process_chpw_request(krb5_context context,
 				     krb5_fulladdr *remote_faddr,
 				     krb5_data *req, krb5_data *rep);
 
+#ifdef SVC_GETARGS
 void kadm_1(struct svc_req *, SVCXPRT *);
+#endif
 void krb5_iprop_prog_1(struct svc_req *, SVCXPRT *);
 
 void trunc_name(size_t *len, char **dots);
@@ -93,5 +123,9 @@ kiprop_get_adm_host_srv_name(krb5_context,
 			     const char *,
 			     char **);
 
+
+#ifdef	__cplusplus
+}
+#endif
 
 #endif /* _MISC_H */

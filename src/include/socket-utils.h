@@ -1,4 +1,10 @@
 /*
+ * Copyright 2008 Sun Microsystems, Inc.  All rights reserved.
+ * Use is subject to license terms.
+ */
+
+
+/*
  * Copyright (C) 2001,2005 by the Massachusetts Institute of Technology,
  * Cambridge, MA, USA.  All Rights Reserved.
  * 

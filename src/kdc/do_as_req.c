@@ -1,4 +1,10 @@
 /*
+ * Copyright 2008 Sun Microsystems, Inc.  All rights reserved.
+ * Use is subject to license terms.
+ */
+
+
+/*
  * kdc/do_as_req.c
  *
  * Portions Copyright (C) 2007 Apple Inc.
@@ -55,6 +61,7 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#define NEED_SOCKETS
 #include "k5-int.h"
 #include "com_err.h"
 
@@ -73,14 +80,6 @@
 #include "adm_proto.h"
 #include "extern.h"
 
-#if APPLE_PKINIT
-#define     AS_REQ_DEBUG    0
-#if	    AS_REQ_DEBUG
-#define     asReqDebug(args...)       printf(args)
-#else
-#define     asReqDebug(args...)
-#endif
-#endif /* APPLE_PKINIT */
 
 static krb5_error_code prepare_error_as (struct kdc_request_state *, krb5_kdc_req *, int, krb5_data *, 
 					 krb5_principal, krb5_data **,
@@ -99,20 +98,27 @@ process_as_req(krb5_kdc_req *request, krb5_data *req_pkt,
     krb5_error_code errcode;
     int c_nprincs = 0, s_nprincs = 0;
     krb5_boolean more;
-    krb5_timestamp kdc_time, authtime = 0;
+    krb5_timestamp kdc_time, authtime, etime = 0;
     krb5_keyblock session_key;
     const char *status;
     krb5_key_data *server_key, *client_key;
     krb5_keyblock server_keyblock, client_keyblock;
     krb5_keyblock *mkey_ptr;
     krb5_enctype useenctype;
+#ifdef	KRBCONF_KDC_MODIFIES_KDB
     krb5_boolean update_client = 0;
+#endif	/* KRBCONF_KDC_MODIFIES_KDB */
     krb5_data e_data;
     register int i;
     krb5_timestamp until, rtime;
+    long long tmp_client_times, tmp_server_times, tmp_realm_times;
     char *cname = 0, *sname = 0;
     unsigned int c_flags = 0, s_flags = 0;
     krb5_principal_data client_princ;
+    const char *fromstring = 0;
+    char ktypestr[128];
+    char rep_etypestr[128];
+    char fromstringbuf[70];
     void *pa_context = NULL;
     int did_log = 0;
     const char *emsg = 0;
@@ -120,19 +126,28 @@ process_as_req(krb5_kdc_req *request, krb5_data *req_pkt,
     struct kdc_request_state *state = NULL;
     krb5_data encoded_req_body;
     krb5_keyblock *as_encrypting_key = NULL;
-    
-
-#if APPLE_PKINIT
-    asReqDebug("process_as_req top realm %s name %s\n", 
-	request->client->realm.data, request->client->data->data);
-#endif /* APPLE_PKINIT */
+    struct in_addr from_in4;	/* IPv4 address of sender */
 
     ticket_reply.enc_part.ciphertext.data = 0;
     e_data.data = 0;
     server_keyblock.contents = NULL;
     client_keyblock.contents = NULL;
-    reply.padata = 0;
+    reply.padata = 0; /* avoid bogus free in error_out */
     memset(&reply, 0, sizeof(reply));
+    (void) memset(&session_key, 0, sizeof(krb5_keyblock));
+    enc_tkt_reply.authorization_data = NULL;
+
+    ktypes2str(ktypestr, sizeof(ktypestr),
+	       request->nktypes, request->ktype);
+
+	(void) memcpy(&from_in4, from->address->contents, /* SUNW */
+		    sizeof (struct in_addr));
+
+    fromstring = inet_ntop(ADDRTYPE2FAMILY (from->address->addrtype),
+			   &from_in4,
+			   fromstringbuf, sizeof(fromstringbuf));
+    if (!fromstring)
+	fromstring = "<unknown>";
 
     session_key.contents = 0;
     enc_tkt_reply.authorization_data = NULL;
@@ -335,6 +350,8 @@ process_as_req(krb5_kdc_req *request, krb5_data *req_pkt,
     enc_tkt_reply.transited.tr_type = KRB5_DOMAIN_X500_COMPRESS;
     enc_tkt_reply.transited.tr_contents = empty_string; /* equivalent of "" */
 
+    enc_tkt_reply.times.authtime = kdc_time;
+
     if (isflagset(request->kdc_options, KDC_OPT_POSTDATED)) {
 	setflag(enc_tkt_reply.flags, TKT_FLG_POSTDATED);
 	setflag(enc_tkt_reply.flags, TKT_FLG_INVALID);
@@ -343,12 +360,22 @@ process_as_req(krb5_kdc_req *request, krb5_data *req_pkt,
 	enc_tkt_reply.times.starttime = kdc_time;
     
     until = (request->till == 0) ? kdc_infinity : request->till;
+	/* These numbers could easily be large
+	 * use long long variables to ensure that they don't
+	 * result in negative values when added.
+	*/
+
+    tmp_client_times = (long long) enc_tkt_reply.times.starttime + client.max_life;
+
+    tmp_server_times = (long long) enc_tkt_reply.times.starttime + server.max_life;
+
+    tmp_realm_times = (long long) enc_tkt_reply.times.starttime + max_life_for_realm;
 
     enc_tkt_reply.times.endtime =
 	min(until,
-	    min(enc_tkt_reply.times.starttime + client.max_life,
-		min(enc_tkt_reply.times.starttime + server.max_life,
-		    enc_tkt_reply.times.starttime + max_life_for_realm)));
+	    min(tmp_client_times,
+		min(tmp_server_times,
+			min(tmp_realm_times,KRB5_KDB_EXPIRATION))));
 
     if (isflagset(request->kdc_options, KDC_OPT_RENEWABLE_OK) &&
 	!isflagset(client.attributes, KRB5_KDB_DISALLOW_RENEWABLE) &&
@@ -367,11 +394,16 @@ process_as_req(krb5_kdc_req *request, krb5_data *req_pkt,
 	 * earlier than the endtime of the ticket? 
 	 */
 	setflag(enc_tkt_reply.flags, TKT_FLG_RENEWABLE);
+	tmp_client_times = (double) enc_tkt_reply.times.starttime + client.max_renewable_life;
+
+    	tmp_server_times = (double) enc_tkt_reply.times.starttime + server.max_renewable_life;
+
+    	tmp_realm_times = (double) enc_tkt_reply.times.starttime + max_renewable_life_for_realm;
+	
 	enc_tkt_reply.times.renew_till =
-	    min(rtime, enc_tkt_reply.times.starttime +
-		       min(client.max_renewable_life,
-			   min(server.max_renewable_life,
-			       max_renewable_life_for_realm)));
+	    min(rtime, min(tmp_client_times,
+		       min(tmp_server_times,
+			   min(tmp_realm_times,KRB5_KDB_EXPIRATION))));
     } else
 	enc_tkt_reply.times.renew_till = 0; /* XXX */
 
@@ -477,6 +509,15 @@ process_as_req(krb5_kdc_req *request, krb5_data *req_pkt,
 	goto errout;
     }
 	
+    errcode = krb5_encrypt_tkt_part(kdc_context, &encrypting_key, &ticket_reply);
+    krb5_free_keyblock_contents(kdc_context, &encrypting_key);
+    encrypting_key.contents = 0;
+    if (errcode) {
+	status = "ENCRYPTING_TICKET";
+	goto errout;
+    }
+    ticket_reply.enc_part.kvno = server_key->key_data_kvno;
+
     /*
      * Find the appropriate client key.  We search in the order specified
      * by request keytype list.
@@ -540,6 +581,14 @@ process_as_req(krb5_kdc_req *request, krb5_data *req_pkt,
     reply_encpart.flags = enc_tkt_reply.flags;
     reply_encpart.server = ticket_reply.server;
 
+    /*
+     * Take the minimum of expiration or pw_expiration if not zero.
+     */
+    if (client.expiration != 0 && client.pw_expiration != 0)
+    	etime = min(client.expiration, client.pw_expiration);
+    else
+	etime = client.expiration ? client.expiration : client.pw_expiration;
+
     /* copy the time fields EXCEPT for authtime; it's location
        is used for ktime */
     reply_encpart.times = enc_tkt_reply.times;
@@ -556,11 +605,6 @@ process_as_req(krb5_kdc_req *request, krb5_data *req_pkt,
 	status = "KDC_RETURN_PADATA";
 	goto errout;
     }
-
-#if APPLE_PKINIT
-    asReqDebug("process_as_req reply realm %s name %s\n", 
-	reply.client->realm.data, reply.client->data->data);
-#endif /* APPLE_PKINIT */
 
     errcode = return_svr_referral_data(kdc_context,
 				       &server, &reply_encpart);
@@ -622,6 +666,21 @@ process_as_req(krb5_kdc_req *request, krb5_data *req_pkt,
     memset(reply.enc_part.ciphertext.data, 0, reply.enc_part.ciphertext.length);
     free(reply.enc_part.ciphertext.data);
 
+    /* SUNW14resync:
+     * The third argument to audit_krb5kdc_as_req() is zero as the local
+     * portnumber is no longer passed to process_as_req().
+     */ 
+    audit_krb5kdc_as_req(&from_in4, (in_port_t)from->port, 0, 
+                        cname, sname, 0);  
+    rep_etypes2str(rep_etypestr, sizeof(rep_etypestr), &reply);
+    krb5_klog_syslog(LOG_INFO,
+		     "AS_REQ (%s) %s: ISSUE: authtime %d, "
+		     "%s, %s for %s",
+		     ktypestr,
+	             fromstring, authtime,
+		     rep_etypestr,
+		     cname, sname);
+
 #ifdef	KRBCONF_KDC_MODIFIES_KDB
     /*
      * If we get this far, we successfully did the AS_REQ.
@@ -650,13 +709,25 @@ egress:
 	emsg = krb5_get_error_message(kdc_context, errcode);
 
     if (status) {
-	log_as_req(from, request, &reply, &client, cname, &server, sname, 0,
-		   status, errcode, emsg);
+	const char *emsg = NULL;
+	audit_krb5kdc_as_req(&from_in4, (in_port_t)from->port,
+	    0, cname, sname, errcode);
+        krb5_klog_syslog(LOG_INFO, "AS_REQ (%s) %s: %s: %s for %s%s%s",
+	    ktypestr,
+	    fromstring, status,
+	    cname ? cname : "<unknown client>",
+	    sname ? sname : "<unknown server>",
+	    errcode ? ", " : "",
+	    errcode ? emsg : "");
+	if (errcode)
+	    krb5_free_error_message (kdc_context, emsg);
 	did_log = 1;
     }
     if (errcode) {
+        int got_err = 0;
 	if (status == 0) {
-	    status = emsg;
+	    status = krb5_get_error_message (kdc_context, errcode);
+	    got_err = 1;
 	}
 	errcode -= ERROR_TABLE_BASE_krb5;
 	if (errcode < 0 || errcode > 128)
@@ -665,7 +736,10 @@ egress:
 	errcode = prepare_error_as(state, request, errcode, &e_data,
  				   c_nprincs ? client.princ : NULL,
 				   response, status);
-	status = 0;
+	if (got_err) {
+	    krb5_free_error_message (kdc_context, status);
+		status = 0;
+	}
     }
     if (emsg)
 	krb5_free_error_message(kdc_context, emsg);

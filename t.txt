@@ -1,7 +1,7 @@
 src/clients/kdestroy/kdestroy.c	usr/src/cmd/krb5/kdestroy/kdestroy.c
 src/clients/kinit/kinit.c	usr/src/cmd/krb5/kinit/kinit.c
 src/clients/klist/klist.c	usr/src/cmd/krb5/klist/klist.c
-src/clients/kpasswd/kpasswd.c	usr/src/cmd/krb5/kadmin/kpasswd/kpasswd.c
+src/clients/kpasswd/kpasswd.c	NO
 src/clients/kpasswd/ksetpwd.c	NOTFOUND
 src/clients/kvno/kvno.c	NOTFOUND
 src/include/CredentialsCache.h	NOTFOUND
@@ -20,7 +20,7 @@ src/include/gssrpc/auth_unix.h	NO
 src/include/gssrpc/clnt.h	NO
 src/include/gssrpc/netdb.h	NO
 src/include/gssrpc/pmap_clnt.h	NO
-src/include/gssrpc/pmap_prot.h	usr/src/lib/libbc/inc/include/rpc/pmap_prot.h
+src/include/gssrpc/pmap_prot.h	NO
 src/include/gssrpc/pmap_rmt.h	NO
 src/include/gssrpc/rename.h	NOTFOUND
 src/include/gssrpc/rpc.h	NO
@@ -49,7 +49,7 @@ src/include/kdb_log.h	usr/src/lib/krb5/kdb/kdb_log.h
 src/include/krb5/authdata_plugin.h	NOTFOUND
 src/include/krb5/locate_plugin.h	usr/src/lib/gss_mechs/mech_krb5/include/locate_plugin.h
 src/include/krb5/preauth_plugin.h	usr/src/lib/gss_mechs/mech_krb5/include/preauth_plugin.h
-src/include/krb5.h	usr/src/uts/common/gssapi/mechs/krb5/include/krb5.h
+src/include/krb5.h	NO
 src/include/krb54proto.h	NOTFOUND
 src/include/pkinit_apple_utils.h	NOTFOUND
 src/include/pkinit_asn1.h	NOTFOUND
@@ -91,7 +91,7 @@ src/kadmin/server/kadm_rpc_svc.c	usr/src/cmd/krb5/kadmin/server/kadm_rpc_svc.c
 src/kadmin/server/misc.c	usr/src/cmd/krb5/kadmin/server/misc.c
 src/kadmin/server/misc.h	usr/src/cmd/krb5/kadmin/server/misc.h
 src/kadmin/server/network.c	usr/src/cmd/krb5/krb5kdc/network.c
-src/kadmin/server/ovsec_kadmd.c	usr/src/cmd/krb5/kadmin/server/ovsec_kadmd.c
+src/kadmin/server/ovsec_kadmd.c	VERYDIFFERENT
 src/kadmin/server/schpw.c	NOTFOUND
 src/kadmin/server/server_glue_v1.c	usr/src/cmd/krb5/kadmin/server/server_glue_v1.c
 src/kadmin/server/server_stubs.c	usr/src/cmd/krb5/kadmin/server/server_stubs.c

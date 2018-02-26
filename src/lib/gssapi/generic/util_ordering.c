@@ -1,3 +1,7 @@
+/*
+ * Copyright 2008 Sun Microsystems, Inc.  All rights reserved.
+ * Use is subject to license terms.
+ */
 /* -*- mode: c; indent-tabs-mode: nil -*- */
 /*
  * Copyright 1993 by OpenVision Technologies, Inc.
@@ -22,7 +26,9 @@
  */
 
 /*
- * $Id$
+ * SUNW15resync
+ * Left this alone (MIT version causes STC gss_verify_mic(6) test failure)
+ * as it has bug fixes that MIT does not yet.
  */
 
 /*
@@ -56,6 +62,68 @@ typedef struct _queue {
 
 #define QSIZE(q) (sizeof((q)->elem)/sizeof((q)->elem[0]))
 #define QELEM(q,i) ((q)->elem[(i)%QSIZE(q)])
+
+/*
+ * mask(max) is 2 ** 64 - 1, and half is 2 ** 63.
+ * |-------------------------------|-----------------------------|
+ * 0                              half                           mask
+ *		   |-------------------------------|
+ *                       half range ( 2 ** 63 )
+ *
+ * Here, the distance between n1 and n2 is used, if it falls
+ * in the "half range", normal integer comparison is enough.
+ *
+ * If the distance is bigger than half of the range, one of them must
+ * have passed the 'mask' point while the other one didn't.  In this
+ * case, the result should be the reverse of normal comparison, i.e.
+ * the smaller one is considered bigger.
+ *
+ * If we shift the smaller value by adding 'mask' to it,
+ * the distance will be in half range again.
+ *
+ * The assumption is that the out of order event will not
+ * happen too often.  If the distance is really bigger than half range,
+ * (1 is expected, but half + 2 arrives) we really don't know if it's a
+ * GAP token or an OLD token that wrapped.
+ */
+static int
+after(gssint_uint64 n1, gssint_uint64 n2, gssint_uint64 mask)
+{
+	int bigger;
+	gssint_uint64 diff;
+	gssint_uint64 half;
+
+	/*
+	 * rule 1: same number.
+	 * This may be ambiguous, but the caller of this function,
+	 * g_order_check already takes care of it.
+	 */
+	if (n1 == n2)
+		return (0);
+
+	half = 1 + (mask >> 1);
+
+	if (n1 > n2) {
+		diff = n1 - n2;
+		bigger = 1;
+	} else {
+		diff = n2 - n1;
+		bigger = 0;
+	}
+
+	/* rule 2: in the same half range, normal comparison is enough */
+	if (diff < half)
+		return bigger;
+
+	n1 &= half;
+
+	/* rule 3: different half, and n1 is on upper, n2 is bigger */
+	/* rule 4: different half, and n1 is on lower, n1 is bigger */
+	if (n1 != 0)
+		return (0);
+
+	return (1);
+}
 
 static void
 queue_insert(queue *q, int after, gssint_uint64 seqnum)
@@ -94,8 +162,8 @@ g_order_init(void **vqueue, gssint_uint64 seqnum,
 {
     queue *q;
 
-    if ((q = (queue *) malloc(sizeof(queue))) == NULL)
-        return(ENOMEM);
+   if ((q = (queue *) MALLOC(sizeof(queue))) == NULL)
+      return(ENOMEM);
 
     /* This stops valgrind from complaining about writing uninitialized
        data if the caller exports the context and writes it to a file.
@@ -146,8 +214,7 @@ g_order_check(void **vqueue, gssint_uint64 seqnum)
     }
 
     /* rule 2: > expected sequence number */
-
-    if ((seqnum > expected)) {
+   if (after(seqnum, expected, q->mask)) {
         queue_insert(q, q->start+q->length-1, seqnum);
         if (q->do_replay && !q->do_sequence)
             return(GSS_S_COMPLETE);
@@ -156,22 +223,7 @@ g_order_check(void **vqueue, gssint_uint64 seqnum)
     }
 
     /* rule 3: seqnum < seqnum(first) */
-
-    if ((seqnum < QELEM(q,q->start)) &&
-        /* Is top bit of whatever width we're using set?
-
-        We used to check for greater than or equal to firstnum, but
-        (1) we've since switched to compute values relative to
-        firstnum, so the lowest we can have is 0, and (2) the effect
-        of the original scheme was highly dependent on whether
-        firstnum was close to either side of 0.  (Consider
-        firstnum==0xFFFFFFFE and we miss three packets; the next
-        packet is *new* but would look old.)
-
-        This check should give us 2**31 or 2**63 messages "new", and
-        just as many "old".  That's not quite right either.  */
-        (seqnum & (1 + (q->mask >> 1)))
-    ) {
+   if (after(QELEM(q,q->start), seqnum, q->mask)) {
         if (q->do_replay && !q->do_sequence)
             return(GSS_S_OLD_TOKEN);
         else
@@ -187,7 +239,8 @@ g_order_check(void **vqueue, gssint_uint64 seqnum)
         for (i=q->start; i<q->start+q->length-1; i++) {
             if (seqnum == QELEM(q,i))
                 return(GSS_S_DUPLICATE_TOKEN);
-            if ((seqnum > QELEM(q,i)) && (seqnum < QELEM(q,i+1))) {
+         if (after(seqnum, QELEM(q,i), q->mask) && 
+             after(QELEM(q,i+1), seqnum, q->mask)) {
                 queue_insert(q, i, seqnum);
                 if (q->do_replay && !q->do_sequence)
                     return(GSS_S_COMPLETE);
@@ -208,7 +261,7 @@ g_order_free(void **vqueue)
 
     q = (queue *) (*vqueue);
 
-    free(q);
+   FREE (q, sizeof (queue));
 
     *vqueue = NULL;
 }
@@ -216,6 +269,8 @@ g_order_free(void **vqueue)
 /*
  * These support functions are for the serialization routines
  */
+
+/*ARGSUSED*/
 gss_uint32
 g_queue_size(void *vqueue, size_t *sizep)
 {
@@ -228,7 +283,7 @@ g_queue_externalize(void *vqueue, unsigned char **buf, size_t *lenremain)
 {
     if (*lenremain < sizeof(queue))
         return ENOMEM;
-    memcpy(*buf, vqueue, sizeof(queue));
+    (void) memcpy(*buf, vqueue, sizeof(queue));
     *buf += sizeof(queue);
     *lenremain -= sizeof(queue);
 
@@ -242,9 +297,9 @@ g_queue_internalize(void **vqueue, unsigned char **buf, size_t *lenremain)
 
     if (*lenremain < sizeof(queue))
         return EINVAL;
-    if ((q = malloc(sizeof(queue))) == 0)
+    if ((q = (void *) MALLOC(sizeof(queue))) == 0)
         return ENOMEM;
-    memcpy(q, *buf, sizeof(queue));
+    (void) memcpy(q, *buf, sizeof(queue));
     *buf += sizeof(queue);
     *lenremain -= sizeof(queue);
     *vqueue = q;

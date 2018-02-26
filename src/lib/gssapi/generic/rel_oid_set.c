@@ -1,6 +1,3 @@
-/* -*- mode: c; indent-tabs-mode: nil -*- */
-/* #ident  "@(#)gss_release_oid_set.c 1.12     95/08/23 SMI" */
-
 /*
  * Copyright 1996 by Sun Microsystems, Inc.
  *
@@ -44,10 +41,10 @@ generic_gss_release_oid_set(
         *minor_status = 0;
 
     if (set == NULL)
-        return(GSS_S_COMPLETE);
+        return (GSS_S_COMPLETE);
 
     if (*set == GSS_C_NULL_OID_SET)
-        return(GSS_S_COMPLETE);
+        return (GSS_S_COMPLETE);
 
     for (i=0; i<(*set)->count; i++)
         free((*set)->elements[i].elements);

@@ -1,3 +1,4 @@
+/*   Copyright (c) 2010, Oracle and/or its affiliates. All rights reserved. */
 /* -*- mode: c; indent-tabs-mode: nil -*- */
 /*
  * Copyright 2007, 2008 by the Massachusetts Institute of Technology.
@@ -25,9 +26,17 @@
  */
 
 #include "gssapiP_generic.h"
+#include "mechglueP.h"
 #include <string.h>
+#include <stdio.h>
 #ifndef _WIN32
 #include <unistd.h>
+#endif
+
+/* Solaris Kerberos */
+#define inline
+#ifdef DEBUG
+#undef DEBUG
 #endif
 
 /* The mapping table is 0-based, but let's export codes that are

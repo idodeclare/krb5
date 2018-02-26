@@ -1,5 +1,8 @@
 /* -*- mode: c; indent-tabs-mode: nil -*- */
 /*
+ * Copyright (c) 1999, 2010, Oracle and/or its affiliates. All rights reserved.
+ */
+/*
  * Copyright 1993 by OpenVision Technologies, Inc.
  *
  * Permission to use, copy, modify, distribute, and sell this software
@@ -23,7 +26,7 @@
 
 #include "gssapiP_krb5.h"
 #include "com_err.h"
-
+#include <syslog.h>
 /* XXXX internationalization!! */
 
 static inline int
@@ -43,6 +46,9 @@ free_string (char *s)
 }
 #include "error_map.h"
 #include <stdio.h>
+/*
+ * AKA krb5_gss_get_error_message.  See #define in gssapiP_krb5.h.
+ */
 char *get_error_message(OM_uint32 minor_code)
 {
     gsserrmap *p = k5_getspecific(K5_KEY_GSS_KRB5_ERROR_MESSAGE);
@@ -60,7 +66,7 @@ char *get_error_message(OM_uint32 minor_code)
 #endif
         }
     }
-    if (msg == 0)
+    if (msg == NULL)
         msg = (char *)error_message((krb5_error_code)minor_code);
 #ifdef DEBUG
     fprintf(stderr, " -> %p/%s\n", (void *) msg, msg);
@@ -98,6 +104,13 @@ static int save_error_string_nocopy(OM_uint32 minor_code, char *msg)
         }
     }
     ret = gsserrmap_replace_or_insert(p, minor_code, msg);
+    /* Solaris Kerberos */
+    if (ret) {
+            gsserrmap_destroy(p);
+            free(p);
+            p = NULL;
+    }
+
 fail:
 #ifdef DEBUG
     fprintf(stderr, " p=%p %s\n", (void *)p, ret ? "FAIL" : "SUCCESS");
@@ -184,14 +197,35 @@ krb5_gss_display_status(minor_status, status_value, status_type,
         }
 
         /* If this fails, there's not much we can do...  */
-        if (g_make_string_buffer(krb5_gss_get_error_message(status_value),
-                                 status_string) != 0)
+        /* Solaris Kerberos - cleaned-up/fixed the return checks/values here */
+        if (!g_make_string_buffer(krb5_gss_get_error_message(status_value),
+                                 status_string)) {
             *minor_status = ENOMEM;
-        else
-            *minor_status = 0;
-        return 0;
+            return(GSS_S_FAILURE);
+        }
+        *minor_status = 0;
+        return(GSS_S_COMPLETE);
     } else {
         *minor_status = 0;
         return(GSS_S_BAD_STATUS);
     }
+}
+
+/*
+ * Solaris Kerberos
+ * Hack alert: workaround obfusicated func name issues for mech_spnego.so.
+ */
+OM_uint32
+krb5_gss_display_status2(minor_status, status_value, status_type,
+                        mech_type, message_context, status_string)
+    OM_uint32 *minor_status;
+    OM_uint32 status_value;
+    int status_type;
+    gss_OID mech_type;
+    OM_uint32 *message_context;
+    gss_buffer_t status_string;
+{
+        return(krb5_gss_display_status(minor_status, status_value,
+ 				  status_type, mech_type, message_context,
+ 				  status_string));
 }

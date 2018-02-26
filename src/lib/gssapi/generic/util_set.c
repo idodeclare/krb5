@@ -1,3 +1,7 @@
+/*
+ * Copyright 2007 Sun Microsystems, Inc.  All rights reserved.
+ * Use is subject to license terms.
+ */
 /* -*- mode: c; indent-tabs-mode: nil -*- */
 /*
  * Copyright 1995 by OpenVision Technologies, Inc.
@@ -22,9 +26,9 @@
  */
 
 /*
- * $Id$
  */
 
+#include <mechglueP.h>  /* SUNW15resync - for MALLOC/FREE */
 #include "gssapiP_generic.h"
 
 struct _g_set_elt {
@@ -47,7 +51,7 @@ int g_set_destroy(g_set_elt *s)
 
     while (*s) {
         next = (*s)->next;
-        free(*s);
+      FREE(*s, sizeof(struct _g_set));
         *s = next;
     }
 
@@ -59,7 +63,7 @@ int g_set_entry_add(g_set_elt *s, void *key, void *value)
 {
     g_set_elt first;
 
-    if ((first = (struct _g_set_elt *) malloc(sizeof(struct _g_set_elt))) == NULL)
+   if ((first = (struct _g_set_elt *) MALLOC(sizeof(struct _g_set_elt))) == NULL)
         return(ENOMEM);
 
     first->key = key;
@@ -78,7 +82,7 @@ int g_set_entry_delete(g_set_elt *s, void *key)
     for (p=s; *p; p = &((*p)->next)) {
         if ((*p)->key == key) {
             g_set_elt next = (*p)->next;
-            free(*p);
+	 FREE(*p, sizeof(struct _g_set_elt));
             *p = next;
 
             return(0);

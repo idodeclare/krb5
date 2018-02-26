@@ -1,5 +1,8 @@
 /* -*- mode: c; indent-tabs-mode: nil -*- */
 /*
+ * Copyright (c) 1999, 2010, Oracle and/or its affiliates. All rights reserved.
+ */
+/*
  * Copyright 1993 by OpenVision Technologies, Inc.
  *
  * Permission to use, copy, modify, distribute, and sell this software
@@ -24,7 +27,6 @@
 #include "gssapiP_krb5.h"
 
 /*
- * $Id$
  */
 
 OM_uint32

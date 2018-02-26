@@ -26,8 +26,18 @@
 #include <stdio.h>
 
 /*
- * $Id$
  */
+
+/* XXXX these are not part of the GSSAPI C bindings!  (but should be) */
+/* SUNW15resync - MIT 1.5 has these in gssapi.h */
+
+#define GSS_CALLING_ERROR_FIELD(x) \
+   (((x) >> GSS_C_CALLING_ERROR_OFFSET) & GSS_C_CALLING_ERROR_MASK)
+#define GSS_ROUTINE_ERROR_FIELD(x) \
+   (((x) >> GSS_C_ROUTINE_ERROR_OFFSET) & GSS_C_ROUTINE_ERROR_MASK)
+#define GSS_SUPPLEMENTARY_INFO_FIELD(x) \
+   (((x) >> GSS_C_SUPPLEMENTARY_OFFSET) & GSS_C_SUPPLEMENTARY_MASK)
+
 
 /* This code has knowledge of the min and max errors of each type
    within the gssapi major status */

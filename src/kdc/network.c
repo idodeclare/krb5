@@ -1,4 +1,9 @@
 /*
+ * Copyright 2008 Sun Microsystems, Inc.  All rights reserved.
+ * Use is subject to license terms.
+ */
+
+/*
  * kdc/network.c
  *
  * Copyright 1990,2000,2007,2008,2009 by the Massachusetts Institute of Technology.
@@ -27,17 +32,23 @@
  */
 
 #include "k5-int.h"
+#include "com_err.h"
 #include "kdc_util.h"
 #include "extern.h"
 #include "kdc5_err.h"
+#include "kadm5/admin.h"
+#include "kadm5/server_internal.h"
+#include "kadm5/kadm_rpc.h"
+#include "iprop.h"
 #include "adm_proto.h"
+#include "misc.h"
 #include <sys/ioctl.h>
 #include <syslog.h>
 
 #include <stddef.h>
 #include <ctype.h>
 #include "port-sockets.h"
-#include "socket-utils.h"
+/* #include "socket-utils.h" */
 
 #ifdef HAVE_NETINET_IN_H
 #include <sys/types.h>
@@ -48,10 +59,14 @@
 #include <sys/sockio.h>
 #endif
 #include <sys/time.h>
+#include <libintl.h>
+
 #if HAVE_SYS_SELECT_H
 #include <sys/select.h>
 #endif
 #include <arpa/inet.h>
+#include <inet/ip.h>
+#include <inet/ip6.h>
 
 #ifndef ARPHRD_ETHER /* OpenBSD breaks on multiple inclusions */
 #include <net/if.h>
@@ -62,6 +77,9 @@
 #endif
 
 #include "fake-addrinfo.h"
+
+/* XXX */
+#define KDC5_NONET                               (-1779992062L)
 
 /* Misc utility routines.  */
 static void
@@ -174,18 +192,23 @@ static const char *paddr (struct sockaddr *sa)
 
 /* KDC data.  */
 
-enum conn_type {
-    CONN_UDP, CONN_UDP_PKTINFO, CONN_TCP_LISTENER, CONN_TCP,
-    CONN_ROUTING
-};
+enum kdc_conn_type { CONN_UDP, CONN_TCP_LISTENER, CONN_TCP };
 
 /* Per-connection info.  */
 struct connection {
     int fd;
-    enum conn_type type;
-    void (*service)(struct connection *, int);
+    enum kdc_conn_type type;
+    void (*service)(void *handle, struct connection *, const char *, int);
+    /* Solaris Kerberos: for auditing */
+    in_port_t port; /* local port */
     union {
 	/* Type-specific information.  */
+	struct {
+	    int x;
+	} udp;
+	struct {
+	    int x;
+	} tcp_listener;
 	struct {
 	    /* connection */
 	    struct sockaddr_storage addr_s;
@@ -240,7 +263,7 @@ struct connection {
   (set.data[idx] = set.data[--set.n], 0)
 
 #define FREE_SET_DATA(set) \
-  (free(set.data), set.data = 0, set.max = 0, set.n = 0)
+  (free(set.data), set.data = NULL, set.max = 0, set.n = 0)
 
 
 /* Set<struct connection *> connections; */
@@ -299,6 +322,7 @@ static krb5_error_code add_tcp_port(int port)
 #include "foreachaddr.h"
 
 struct socksetup {
+    const char *prog;
     krb5_error_code retval;
     int udp_flags;
 #define UDP_DO_IPV4 1
@@ -306,28 +330,22 @@ struct socksetup {
 };
 
 static struct connection *
-add_fd (struct socksetup *data, int sock, enum conn_type conntype,
-	void (*service)(struct connection *, int))
+add_fd (struct socksetup *data, int sock, enum kdc_conn_type conntype,
+	void (*service)(void *handle, struct connection *, const char *, int))
 {
     struct connection *newconn;
     void *tmp;
 
-#ifndef _WIN32
-    if (sock >= FD_SETSIZE) {
-	data->retval = EMFILE;	/* XXX */
-	kdc_err(NULL, 0, "file descriptor number %d too high", sock);
-	return 0;
-    }
-#endif
-    newconn = malloc(sizeof(*newconn));
-    if (newconn == 0) {
+    newconn = (struct connection *)malloc(sizeof(*newconn));
+    if (newconn == NULL) {
 	data->retval = ENOMEM;
-	kdc_err(NULL, ENOMEM, "cannot allocate storage for connection info");
+	com_err(data->prog, ENOMEM,
+		gettext("cannot allocate storage for connection info"));
 	return 0;
     }
     if (!ADD(connections, newconn, tmp)) {
 	data->retval = ENOMEM;
-	kdc_err(NULL, ENOMEM, "cannot save socket info");
+	com_err(data->prog, ENOMEM, gettext("cannot save socket info"));
 	free(newconn);
 	return 0;
     }
@@ -339,9 +357,9 @@ add_fd (struct socksetup *data, int sock, enum conn_type conntype,
     return newconn;
 }
 
-static void process_packet(struct connection *, int);
-static void accept_tcp_connection(struct connection *, int);
-static void process_tcp_connection(struct connection *, int);
+static void process_packet(void *handle, struct connection *, const char *, int);
+static void accept_tcp_connection(void *handle, struct connection *, const char *, int);
+static void process_tcp_connection(void *handle, struct connection *, const char *, int);
 
 static struct connection *
 add_udp_fd (struct socksetup *data, int sock, int pktinfo)
@@ -405,54 +423,59 @@ setup_a_tcp_listener(struct socksetup *data, struct sockaddr *addr)
 
     sock = socket(addr->sa_family, SOCK_STREAM, 0);
     if (sock == -1) {
-	kdc_err(NULL, errno, "Cannot create TCP server socket on %s",
+	com_err(data->prog, errno, 
+		gettext("Cannot create TCP server socket on %s"),
 		paddr(addr));
 	return -1;
     }
     set_cloexec_fd(sock);
-#ifndef _WIN32
-    if (sock >= FD_SETSIZE) {
+    /*
+     * Solaris Kerberos: noticed that there where bind problems for tcp sockets
+     * if kdc restarted quickly.  Setting SO_REUSEADDR allowed binds to succeed.
+     */
+    if (setreuseaddr(sock, 1) < 0) {
+	com_err(data->prog, errno,
+		gettext("Cannot enable SO_REUSEADDR on fd %d"), sock);
 	close(sock);
-	kdc_err(NULL, 0, "TCP socket fd number %d (for %s) too high",
-		sock, paddr(addr));
 	return -1;
     }
-#endif
-    if (setreuseaddr(sock, 1) < 0)
-	kdc_err(NULL, errno, "Cannot enable SO_REUSEADDR on fd %d", sock);
 #ifdef KRB5_USE_INET6
     if (addr->sa_family == AF_INET6) {
 #ifdef IPV6_V6ONLY
 	if (setv6only(sock, 1))
-	    kdc_err(NULL, errno, "setsockopt(%d,IPV6_V6ONLY,1) failed", sock);
+	    com_err(data->prog, errno, "setsockopt(%d,IPV6_V6ONLY,1) failed",
+		    sock);
 	else
-	    kdc_err(NULL, 0, "setsockopt(%d,IPV6_V6ONLY,1) worked", sock);
+	    com_err(data->prog, 0, "setsockopt(%d,IPV6_V6ONLY,1) worked",
+		    sock);
 #else
 	krb5_klog_syslog(LOG_INFO, "no IPV6_V6ONLY socket option support");
 #endif /* IPV6_V6ONLY */
     }
 #endif /* KRB5_USE_INET6 */
     if (bind(sock, addr, socklen(addr)) == -1) {
-	kdc_err(NULL, errno, "Cannot bind TCP server socket on %s",
-		paddr(addr));
+	com_err(data->prog, errno,
+		gettext("Cannot bind TCP server socket on %s"), paddr(addr));
 	close(sock);
 	return -1;
     }
     if (listen(sock, 5) < 0) {
-	kdc_err(NULL, errno, "Cannot listen on TCP server socket on %s",
+	com_err(data->prog, errno, 
+		gettext("Cannot listen on TCP server socket on %s"),
 		paddr(addr));
 	close(sock);
 	return -1;
     }
     if (setnbio(sock)) {
-	kdc_err(NULL, errno,
-		"cannot set listening tcp socket on %s non-blocking",
+	com_err(data->prog, errno,
+		gettext("cannot set listening tcp socket on %s non-blocking"),
 		paddr(addr));
 	close(sock);
 	return -1;
     }
     if (setnolinger(sock)) {
-	kdc_err(NULL, errno, "disabling SO_LINGER on TCP socket on %s",
+	com_err(data->prog, errno, 
+		gettext("disabling SO_LINGER on TCP socket on %s"),
 		paddr(addr));
 	close(sock);
 	return -1;
@@ -505,6 +528,11 @@ setup_tcp_listener_ports(struct socksetup *data)
 	    s6 = setup_a_tcp_listener(data, (struct sockaddr *)&sin6);
 	    if (s6 < 0)
 		return -1;
+#ifdef IPV6_V6ONLY
+	    if (setv6only(s6, 0))
+		com_err(data->prog, errno,
+		       	gettext("setsockopt(IPV6_V6ONLY,0) failed"));
+#endif
 
 	    s4 = setup_a_tcp_listener(data, (struct sockaddr *)&sin4);
 #endif /* KRB5_USE_INET6 */
@@ -610,8 +638,8 @@ setup_udp_port_1(struct socksetup *data, struct sockaddr *addr,
 	sock = socket (addr->sa_family, SOCK_DGRAM, 0);
 	if (sock == -1) {
 	    data->retval = errno;
-	    kdc_err(NULL, data->retval,
-		    "Cannot create server socket for port %d address %s",
+	    com_err(data->prog, data->retval,
+		    gettext("Cannot create server socket for port %d address %s"),
 		    port, haddrbuf);
 	    return 1;
 	}
@@ -620,10 +648,11 @@ setup_udp_port_1(struct socksetup *data, struct sockaddr *addr,
 	if (addr->sa_family == AF_INET6) {
 #ifdef IPV6_V6ONLY
 	    if (setv6only(sock, 1))
-		kdc_err(NULL, errno, "setsockopt(%d,IPV6_V6ONLY,1) failed",
-			sock);
+		com_err(data->prog, errno,
+			"setsockopt(%d,IPV6_V6ONLY,1) failed", sock);
 	    else
-		kdc_err(NULL, 0, "setsockopt(%d,IPV6_V6ONLY,1) worked", sock);
+		com_err(data->prog, 0, "setsockopt(%d,IPV6_V6ONLY,1) worked",
+			sock);
 #else
 	    krb5_klog_syslog(LOG_INFO, "no IPV6_V6ONLY socket option support");
 #endif /* IPV6_V6ONLY */
@@ -632,7 +661,7 @@ setup_udp_port_1(struct socksetup *data, struct sockaddr *addr,
 	set_sa_port(addr, htons(port));
 	if (bind (sock, (struct sockaddr *)addr, socklen (addr)) == -1) {
 	    data->retval = errno;
-	    kdc_err(NULL, data->retval,
+	    com_err(data->prog, data->retval,
 		    "Cannot bind server socket to port %d address %s",
 		    port, haddrbuf);
 	    close(sock);
@@ -644,7 +673,7 @@ setup_udp_port_1(struct socksetup *data, struct sockaddr *addr,
 	if (pktinfo) {
 	    r = set_pktinfo(sock, addr->sa_family);
 	    if (r) {
-		kdc_err(NULL, r,
+		com_err(data->prog, r,
 			"Cannot request packet info for udp socket address %s port %d",
 			haddrbuf, port);
 		close(sock);
@@ -669,8 +698,10 @@ static int
 setup_udp_port(void *P_data, struct sockaddr *addr)
 {
     struct socksetup *data = P_data;
+    int sock = -1, i;
     char haddrbuf[NI_MAXHOST];
     int err;
+    u_short port;
 
     if (addr->sa_family == AF_INET && !(data->udp_flags & UDP_DO_IPV4))
 	return 0;
@@ -709,17 +740,39 @@ setup_udp_port(void *P_data, struct sockaddr *addr)
     case AF_DLI:
 	return 0;
 #endif
-#ifdef AF_APPLETALK
-    case AF_APPLETALK:
-	return 0;
-#endif
     default:
 	krb5_klog_syslog (LOG_INFO,
 			  "skipping unrecognized local address family %d",
 			  addr->sa_family);
 	return 0;
     }
-    return setup_udp_port_1(data, addr, haddrbuf, 0);
+
+    FOREACH_ELT (udp_port_data, i, port) {
+	sock = socket (addr->sa_family, SOCK_DGRAM, 0);
+	if (sock == -1) {
+	    data->retval = errno;
+	    com_err(data->prog, data->retval,
+		    gettext("Cannot create server socket for port %d address %s"),
+		    port, haddrbuf);
+	    return 1;
+	}
+	set_sa_port(addr, htons(port));
+	if (bind (sock, (struct sockaddr *)addr, socklen (addr)) == -1) {
+	    data->retval = errno;
+	    com_err(data->prog, data->retval,
+		    gettext("Cannot bind server socket to port %d address %s"),
+		    port, haddrbuf);
+	    return 1;
+	}
+	FD_SET (sock, &sstate.rfds);
+	if (sock >= sstate.max)
+	    sstate.max = sock + 1;
+	krb5_klog_syslog (LOG_INFO, "listening on fd %d: udp %s", sock,
+			  paddr((struct sockaddr *)addr));
+	if (add_udp_fd (data, sock) == 0)
+	    return 1;
+    }
+    return 0;
 }
 
 #if 1
@@ -795,7 +848,8 @@ static char *rtm_type_name(int type)
     }
 }
 
-static void process_routing_update(struct connection *conn, int selflags)
+static void process_routing_update(void *handle, struct connection *conn,
+				   const char *prog, int selflags)
 {
     int n_read;
     struct rt_msghdr rtm;
@@ -884,10 +938,11 @@ extern int krb5int_debug_sendto_kdc;
 extern void (*krb5int_sendtokdc_debug_handler)(const void*, size_t);
 
 krb5_error_code
-setup_network()
+setup_network(void *handle, const char *prog)
 {
     struct socksetup setup_data;
     krb5_error_code retval;
+    kadm5_server_handle_t server_handle = (kadm5_server_handle_t)handle;
     char *cp;
     int i, port;
 
@@ -930,6 +985,7 @@ setup_network()
 	}
     }
 
+    setup_data.prog = prog;
     setup_data.retval = 0;
     krb5_klog_syslog (LOG_INFO, "setting up network...");
 #ifdef HAVE_STRUCT_RT_MSGHDR
@@ -949,7 +1005,7 @@ setup_network()
     setup_tcp_listener_ports(&setup_data);
     krb5_klog_syslog (LOG_INFO, "set up %d sockets", n_sockets);
     if (n_sockets == 0) {
-	kdc_err(NULL, 0, "no sockets set up?");
+	com_err(prog, 0, gettext("no sockets set up?"));
 	exit (1);
     }
 
@@ -961,7 +1017,7 @@ static void init_addr(krb5_fulladdr *faddr, struct sockaddr *sa)
     switch (sa->sa_family) {
     case AF_INET:
 	faddr->address->addrtype = ADDRTYPE_INET;
-	faddr->address->length = 4;
+	faddr->address->length = IPV4_ADDR_LEN;
 	faddr->address->contents = (krb5_octet *) &sa2sin(sa)->sin_addr;
 	faddr->port = ntohs(sa2sin(sa)->sin_port);
 	break;
@@ -969,11 +1025,13 @@ static void init_addr(krb5_fulladdr *faddr, struct sockaddr *sa)
     case AF_INET6:
 	if (IN6_IS_ADDR_V4MAPPED(&sa2sin6(sa)->sin6_addr)) {
 	    faddr->address->addrtype = ADDRTYPE_INET;
-	    faddr->address->length = 4;
-	    faddr->address->contents = 12 + (krb5_octet *) &sa2sin6(sa)->sin6_addr;
+	    faddr->address->length = IPV4_ADDR_LEN;
+	    /* offset to RAM address of ipv4 part of ipv6 address */
+	    faddr->address->contents = (IPV6_ADDR_LEN - IPV4_ADDR_LEN) +
+		(krb5_octet *) &sa2sin6(sa)->sin6_addr;
 	} else {
 	    faddr->address->addrtype = ADDRTYPE_INET6;
-	    faddr->address->length = 16;
+	    faddr->address->length = IPV6_ADDR_LEN;
 	    faddr->address->contents = (krb5_octet *) &sa2sin6(sa)->sin6_addr;
 	}
 	faddr->port = ntohs(sa2sin6(sa)->sin6_port);
@@ -1179,7 +1237,66 @@ make_too_big_error (krb5_data **out)
     return 0;
 }
 
-static void process_packet(struct connection *conn, int selflags)
+/* Dispatch routine for set/change password */
+static krb5_error_code
+dispatch(void *handle,
+	 struct sockaddr *local_saddr, krb5_fulladdr *remote_faddr,
+	 krb5_data *request, krb5_data **response)
+{
+    krb5_error_code ret;
+    krb5_keytab kt = NULL;
+    kadm5_server_handle_t server_handle = (kadm5_server_handle_t)handle;
+    krb5_fulladdr local_faddr;
+    krb5_address **local_kaddrs = NULL, local_kaddr_buf;
+
+    *response = NULL;
+
+    if (local_saddr == NULL) {
+	ret = krb5_os_localaddr(server_handle->context, &local_kaddrs);
+	if (ret != 0)
+	    goto cleanup;
+
+	local_faddr.address = local_kaddrs[0];
+	local_faddr.port = 0;
+    } else {
+	local_faddr.address = &local_kaddr_buf;
+	init_addr(&local_faddr, local_saddr);
+    }
+
+    ret = krb5_kt_resolve(server_handle->context, "KDB:", &kt);
+    if (ret != 0) {
+	krb5_klog_syslog(LOG_ERR, "chpw: Couldn't open admin keytab %s",
+			 krb5_get_error_message(server_handle->context, ret));
+	goto cleanup;
+    }
+
+    *response = (krb5_data *)malloc(sizeof(krb5_data));
+    if (*response == NULL) {
+	ret = ENOMEM;
+	goto cleanup;
+    }
+
+    ret = process_chpw_request(server_handle->context,
+			       handle,
+			       server_handle->params.realm,
+			       kt,
+			       &local_faddr,
+			       remote_faddr,
+			       request,
+			       *response);
+
+cleanup:
+    if (local_kaddrs != NULL)
+	krb5_free_addresses(server_handle->context, local_kaddrs);
+
+    krb5_kt_close(server_handle->context, kt);
+
+    return ret;
+}
+
+static void process_packet(void *handle,
+			   struct connection *conn, const char *prog,
+			   int selflags)
 {
     int cc;
     socklen_t saddr_len, daddr_len;
@@ -1191,6 +1308,7 @@ static void process_packet(struct connection *conn, int selflags)
     krb5_data *response;
     char pktbuf[MAX_DGRAM_SIZE];
     int port_fd = conn->fd;
+    kadm5_server_handle_t server_handle = (kadm5_server_handle_t)handle;
 
     response = NULL;
     saddr_len = sizeof(saddr);
@@ -1205,12 +1323,22 @@ static void process_packet(struct connection *conn, int selflags)
 	       before getting the response packet.  */
 	    && errno != ECONNREFUSED
 	    )
-	    kdc_err(NULL, errno, "while receiving from network");
+	    com_err(prog, errno, gettext("while receiving from network"));
 	return;
     }
     if (!cc)
 	return;		/* zero-length packet? */
 
+    if (daddr_len == 0 && conn->type == CONN_UDP) {
+	/* If the PKTINFO option isn't set, this socket should be
+	   bound to a specific local address.  This info probably
+	   should've been saved in our socket data structure at setup
+	   time.  */
+	daddr_len = sizeof(daddr);
+	if (getsockname(port_fd, (struct sockaddr *)&daddr, &daddr_len) != 0)
+	    daddr_len = 0;
+	/* On failure, keep going anyways.  */
+    }
 #if 0
     if (daddr_len > 0) {
 	char addrbuf[100];
@@ -1226,8 +1354,8 @@ static void process_packet(struct connection *conn, int selflags)
     faddr.address = &addr;
     init_addr(&faddr, ss2sa(&saddr));
     /* this address is in net order */
-    if ((retval = dispatch(&request, &faddr, &response))) {
-	kdc_err(NULL, retval, "while dispatching (udp)");
+    if ((retval = dispatch(handle, ss2sa(&daddr), &faddr, &request, &response))) {
+	com_err(prog, retval, gettext("while dispatching (udp)"));
 	return;
     }
     if (response == NULL)
@@ -1247,29 +1375,63 @@ static void process_packet(struct connection *conn, int selflags)
 		      (struct sockaddr *)&daddr, daddr_len);
     if (cc == -1) {
 	char addrbuf[46];
-        krb5_free_data(kdc_context, response);
+        krb5_free_data(server_handle->context, response);
 	if (inet_ntop(((struct sockaddr *)&saddr)->sa_family,
 		      addr.contents, addrbuf, sizeof(addrbuf)) == 0) {
 	    strlcpy(addrbuf, "?", sizeof(addrbuf));
 	}
-	kdc_err(NULL, errno, "while sending reply to %s/%d",
+	com_err(prog, errno, gettext("while sending reply to %s/%d"),
 		addrbuf, faddr.port);
 	return;
     }
     if (cc != response->length) {
-	kdc_err(NULL, 0, "short reply write %d vs %d\n",
+	com_err(prog, 0, gettext("short reply write %d vs %d\n"),
 		response->length, cc);
     }
-    krb5_free_data(kdc_context, response);
+    krb5_free_data(server_handle->context, response);
     return;
 }
 
 static int tcp_data_counter;
-static int max_tcp_data_connections = 30;
+/* Solaris kerberos: getting this value from elsewhere */
+extern int max_tcp_data_connections;
 
-static void kill_tcp_connection(struct connection *);
+static void kill_tcp_connection(void *, struct connection *, int isForcedClose);
 
-static void accept_tcp_connection(struct connection *conn, int selflags)
+static int kill_lru_tcp_or_rpc_connection(void *handle, struct connection *newconn)
+{
+    struct connection *oldest_tcp = NULL;
+    struct connection *c;
+    int i, fd = -1;
+
+    krb5_klog_syslog(LOG_INFO, "too many connections");
+
+    FOREACH_ELT (connections, i, c) {
+	if (c->type != CONN_TCP && c->type != CONN_RPC)
+	    continue;
+	if (c == newconn)
+	    continue;
+#if 0
+	krb5_klog_syslog(LOG_INFO, "fd %d started at %ld", c->fd,
+			 c->u.tcp.start_time);
+#endif
+	if (oldest_tcp == NULL
+	    || oldest_tcp->u.tcp.start_time > c->u.tcp.start_time)
+	    oldest_tcp = c;
+    }
+    if (oldest_tcp != NULL) {
+	krb5_klog_syslog(LOG_INFO, "dropping %s fd %d from %s",
+			 c->type == CONN_RPC ? "rpc" : "tcp",
+			 oldest_tcp->fd, oldest_tcp->u.tcp.addrbuf);
+	fd = oldest_tcp->fd;
+	kill_tcp_connection(handle, oldest_tcp, 1);
+    }
+    return fd;
+}
+
+static void accept_tcp_connection(void *handle,
+				  struct connection *conn, const char *prog,
+				  int selflags)
 {
     int s;
     struct sockaddr_storage addr_s;
@@ -1283,14 +1445,9 @@ static void accept_tcp_connection(struct connection *conn, int selflags)
     if (s < 0)
 	return;
     set_cloexec_fd(s);
-#ifndef _WIN32
-    if (s >= FD_SETSIZE) {
-	close(s);
-	return;
-    }
-#endif
     setnbio(s), setnolinger(s), setkeepalive(s);
 
+    sockdata.prog = prog;
     sockdata.retval = 0;
 
     newconn = add_tcp_data_fd(&sockdata, s);
@@ -1323,34 +1480,10 @@ static void accept_tcp_connection(struct connection *conn, int selflags)
     newconn->u.tcp.buffer = malloc(newconn->u.tcp.bufsiz);
     newconn->u.tcp.start_time = time(0);
 
-    if (++tcp_data_counter > max_tcp_data_connections) {
-	struct connection *oldest_tcp = NULL;
-	struct connection *c;
-	int i;
-
-	krb5_klog_syslog(LOG_INFO, "too many connections");
-
-	FOREACH_ELT (connections, i, c) {
-	    if (c->type != CONN_TCP)
-		continue;
-	    if (c == newconn)
-		continue;
-#if 0
-	    krb5_klog_syslog(LOG_INFO, "fd %d started at %ld", c->fd,
-			     c->u.tcp.start_time);
-#endif
-	    if (oldest_tcp == NULL
-		|| oldest_tcp->u.tcp.start_time > c->u.tcp.start_time)
-		oldest_tcp = c;
-	}
-	if (oldest_tcp != NULL) {
-	    krb5_klog_syslog(LOG_INFO, "dropping tcp fd %d from %s",
-			     oldest_tcp->fd, oldest_tcp->u.tcp.addrbuf);
-	    kill_tcp_connection(oldest_tcp);
-	}
-    }
+    if (++tcp_data_counter > max_tcp_data_connections)
+	kill_lru_tcp_or_rpc_connection(handle, newconn);
     if (newconn->u.tcp.buffer == 0) {
-	kdc_err(NULL, errno, "allocating buffer for new TCP session from %s",
+	com_err(prog, errno, gettext("allocating buffer for new TCP session from %s"),
 		newconn->u.tcp.addrbuf);
 	delete_fd(newconn);
 	close(s);
@@ -1369,10 +1502,15 @@ static void accept_tcp_connection(struct connection *conn, int selflags)
 }
 
 static void
-kill_tcp_connection(struct connection *conn)
+kill_tcp_connection(void *handle, struct connection *conn, int isForcedClose)
 {
+    kadm5_server_handle_t server_handle = (kadm5_server_handle_t)handle;
+
+    assert(conn->type == CONN_TCP || conn->type == CONN_RPC);
+    assert(conn->fd != -1);
+
     if (conn->u.tcp.response)
-	krb5_free_data(kdc_context, conn->u.tcp.response);
+	krb5_free_data(server_handle->context, conn->u.tcp.response);
     if (conn->u.tcp.buffer)
 	free(conn->u.tcp.buffer);
     FD_CLR(conn->fd, &sstate.rfds);
@@ -1384,20 +1522,41 @@ kill_tcp_connection(struct connection *conn)
 	       /* && ! FD_ISSET(sstate.max-1, &sstate.xfds) */
 	    )
 	    sstate.max--;
-    close(conn->fd);
+
+    /* In the non-forced case, the RPC runtime will close the descriptor for us */
+    if (conn->type == CONN_TCP || isForcedClose) {
+	close(conn->fd);
+    }
+
+    /* For RPC connections, call into RPC runtime to flush out any internal state */
+    if (conn->type == CONN_RPC && isForcedClose) {
+	fd_set fds;
+
+	FD_ZERO(&fds);
+	FD_SET(conn->fd, &fds);
+
+	svc_getreqset(&fds);
+
+	if (FD_ISSET(conn->fd, &svc_fdset)) {
+	    krb5_klog_syslog(LOG_ERR,
+			     "descriptor %d closed but still in svc_fdset", conn->fd);
+	}
+    }
+
     conn->fd = -1;
     delete_fd(conn);
     tcp_data_counter--;
 }
 
 static krb5_error_code
-make_toolong_error (krb5_data **out)
+make_toolong_error (void *handle, krb5_data **out)
 {
     krb5_error errpkt;
     krb5_error_code retval;
     krb5_data *scratch;
+    kadm5_server_handle_t server_handle = (kadm5_server_handle_t)handle;
 
-    retval = krb5_us_timeofday(kdc_context, &errpkt.stime, &errpkt.susec);
+    retval = krb5_us_timeofday(server_handle->context, &errpkt.stime, &errpkt.susec);
     if (retval)
 	return retval;
     errpkt.error = KRB_ERR_FIELD_TOOLONG;
@@ -1412,7 +1571,7 @@ make_toolong_error (krb5_data **out)
     scratch = malloc(sizeof(*scratch));
     if (scratch == NULL)
 	return ENOMEM;
-    retval = krb5_mk_error(kdc_context, &errpkt, scratch);
+    retval = krb5_mk_error(server_handle->context, &errpkt, scratch);
     if (retval) {
 	free(scratch);
 	return retval;
@@ -1434,8 +1593,11 @@ queue_tcp_outgoing_response(struct connection *conn)
 }
 
 static void
-process_tcp_connection(struct connection *conn, int selflags)
+process_tcp_connection(void *handle,
+		       struct connection *conn, const char *prog, int selflags)
 {
+    int isForcedClose = 1; /* not used now, but for completeness */
+
     if (selflags & SSF_WRITE) {
 	ssize_t nwrote;
 	SOCKET_WRITEV_TEMP tmp;
@@ -1445,9 +1607,11 @@ process_tcp_connection(struct connection *conn, int selflags)
 	if (nwrote < 0) {
 	    goto kill_tcp_connection;
 	}
-	if (nwrote == 0)
+	if (nwrote == 0) {
 	    /* eof */
+	    isForcedClose = 0;
 	    goto kill_tcp_connection;
+	}
 	while (nwrote) {
 	    sg_buf *sgp = conn->u.tcp.sgp;
 	    if (nwrote < SG_LEN(sgp)) {
@@ -1467,6 +1631,7 @@ process_tcp_connection(struct connection *conn, int selflags)
 	       FIELD_TOOLONG error in reply to a length with the high
 	       bit set, RFC 4120 says we have to close the TCP
 	       stream.  */
+	    isForcedClose = 0;
 	    goto kill_tcp_connection;
 	}
     } else if (selflags & SSF_READ) {
@@ -1501,7 +1666,7 @@ process_tcp_connection(struct connection *conn, int selflags)
 				     conn->u.tcp.addrbuf, (unsigned long) conn->u.tcp.msglen,
 				     (unsigned long) conn->u.tcp.bufsiz - 4);
 		    /* XXX Should return an error.  */
-		    err = make_toolong_error (&conn->u.tcp.response);
+		    err = make_toolong_error(handle, &conn->u.tcp.response);
 		    if (err) {
 			krb5_klog_syslog(LOG_ERR,
 					 "error constructing KRB_ERR_FIELD_TOOLONG error! %s",
@@ -1515,6 +1680,9 @@ process_tcp_connection(struct connection *conn, int selflags)
 	    /* msglen known */
 	    krb5_data request;
 	    krb5_error_code err;
+	    struct sockaddr_storage local_saddr;
+	    socklen_t local_saddrlen = sizeof(local_saddr);
+	    struct sockaddr *local_saddrp = NULL;
 
 	    len = conn->u.tcp.msglen - (conn->u.tcp.offset - 4);
 	    nread = SOCKET_READ(conn->fd,
@@ -1531,10 +1699,15 @@ process_tcp_connection(struct connection *conn, int selflags)
 	    /* have a complete message, and exactly one message */
 	    request.length = conn->u.tcp.msglen;
 	    request.data = conn->u.tcp.buffer + 4;
-	    err = dispatch(&request, &conn->u.tcp.faddr,
-			   &conn->u.tcp.response);
+
+	    if (getsockname(conn->fd, ss2sa(&local_saddr), &local_saddrlen) == 0) {
+		local_saddrp = ss2sa(&local_saddr);
+	    }
+
+	    err = dispatch(handle, local_saddrp, &conn->u.tcp.faddr,
+			   &request, &conn->u.tcp.response);
 	    if (err) {
-		kdc_err(NULL, err, "while dispatching (tcp)");
+		com_err(prog, err, "while dispatching (tcp)");
 		goto kill_tcp_connection;
 	    }
 	have_response:
@@ -1547,30 +1720,24 @@ process_tcp_connection(struct connection *conn, int selflags)
     return;
 
 kill_tcp_connection:
-    kill_tcp_connection(conn);
+    kill_tcp_connection(handle, conn, isForcedClose);
 }
 
-static void service_conn(struct connection *conn, int selflags)
+static void service_conn(void *handle,
+			 struct connection *conn, const char *prog,
+			 int selflags)
 {
-    conn->service(conn, selflags);
+    conn->service(handle, conn, prog, selflags);
 }
 
 /* from sendto_kdc.c */
 static int getcurtime(struct timeval *tvp)
 {
-#ifdef _WIN32
-    struct _timeb tb;
-    _ftime(&tb);
-    tvp->tv_sec = tb.time;
-    tvp->tv_usec = tb.millitm * 1000;
-    return 0;
-#else
     return gettimeofday(tvp, 0) ? errno : 0;
-#endif
 }
 
 krb5_error_code
-listen_and_process()
+listen_and_process(void *handle, const char *prog)
 {
     int			nfound;
     /* This struct contains 3 fd_set objects; on some platforms, they
@@ -1579,22 +1746,27 @@ listen_and_process()
     static struct select_state sout;
     int			i, sret, netchanged = 0;
     krb5_error_code	err;
+    kadm5_server_handle_t server_handle = (kadm5_server_handle_t)handle;
 
     if (conns == (struct connection **) NULL)
 	return KDC5_NONET;
     
     while (!signal_requests_exit) {
 	if (signal_requests_hup) {
-	    int k;
-
-	    krb5_klog_reopen(kdc_context);
-	    for (k = 0; k < kdc_numrealms; k++)
-		krb5_db_invoke(kdc_realmlist[k]->realm_context,
-			       KRB5_KDB_METHOD_REFRESH_POLICY,
-			       NULL, NULL);
+	    krb5_klog_reopen(server_handle->context);
+	    reset_db();
 	    signal_requests_hup = 0;
 	}
-
+#ifdef PURIFY
+	if (signal_pure_report) {
+	    purify_new_reports();
+	    signal_pure_report = 0;
+	}
+	if (signal_pure_clear) {
+	    purify_clear_new_reports();
+	    signal_pure_clear = 0;
+	}
+#endif /* PURIFY */
 	if (network_reconfiguration_needed) {
 	    krb5_klog_syslog(LOG_INFO, "network reconfiguration needed");
 	    /* It might be tidier to add a timer-callback interface to
@@ -1602,7 +1774,7 @@ listen_and_process()
 	       big deal.  */
 	    err = getcurtime(&sstate.end_time);
 	    if (err) {
-		kdc_err(NULL, err, "while getting the time");
+		com_err(prog, err, gettext("while getting the time"));
 		continue;
 	    }
 	    sstate.end_time.tv_sec += 3;
@@ -1613,22 +1785,23 @@ listen_and_process()
 	err = krb5int_cm_call_select(&sstate, &sout, &sret);
 	if (err) {
 	    if (err != EINTR)
-		kdc_err(NULL, err, "while selecting for network input(1)");
+		    com_err(prog, err,
+		        gettext("while selecting for network input(1)"));
 	    continue;
 	}
 	if (sret == 0 && netchanged) {
 	    network_reconfiguration_needed = 0;
-	    closedown_network();
-	    err = setup_network();
+	    closedown_network(handle, prog);
+	    err = setup_network(handle, prog);
 	    if (err) {
-		kdc_err(NULL, err, "while reinitializing network");
+		com_err(prog, err, gettext("while reinitializing network"));
 		return err;
 	    }
 	    netchanged = 0;
 	}
 	if (sret == -1) {
 	    if (errno != EINTR)
-		kdc_err(NULL, errno, "while selecting for network input(2)");
+		com_err(prog, errno, gettext("while selecting for network input(2)"));
 	    continue;
 	}
 	nfound = sret;
@@ -1641,7 +1814,7 @@ listen_and_process()
 	    if (FD_ISSET(conns[i]->fd, &sout.wfds))
 		sflags |= SSF_WRITE, nfound--;
 	    if (sflags)
-		service_conn(conns[i], sflags);
+		service_conn(handle, conns[i], prog, sflags);
 	}
     }
     krb5_klog_syslog(LOG_INFO, "shutdown signal received");
@@ -1649,7 +1822,7 @@ listen_and_process()
 }
 
 krb5_error_code
-closedown_network()
+closedown_network(void *handle, const char *prog)
 {
     int i;
     struct connection *conn;
@@ -1661,6 +1834,18 @@ closedown_network()
 	if (conn->fd >= 0) {
 	    krb5_klog_syslog(LOG_INFO, "closing down fd %d", conn->fd);
 	    (void) close(conn->fd);
+	    if (conn->type == CONN_RPC) {
+		fd_set fds;
+
+		FD_ZERO(&fds);
+		FD_SET(conn->fd, &fds);
+
+		svc_getreqset(&fds);
+	    }
+	}
+	if (conn->type == CONN_RPC_LISTENER) {
+	    if (conn->u.rpc.transp != NULL)
+		svc_destroy(conn->u.rpc.transp);
 	}
 	DEL (connections, i);
 	/* There may also be per-connection data in the tcp structure
@@ -1672,6 +1857,7 @@ closedown_network()
     FREE_SET_DATA(connections);
     FREE_SET_DATA(udp_port_data);
     FREE_SET_DATA(tcp_port_data);
+    FREE_SET_DATA(rpc_svc_data);
 
     return 0;
 }

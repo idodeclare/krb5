@@ -1,4 +1,6 @@
-/* -*- mode: c; indent-tabs-mode: nil -*- */
+/*
+ * Copyright (c) 1999, 2010, Oracle and/or its affiliates. All rights reserved.
+ */
 /*
  * Copyright 1993 by OpenVision Technologies, Inc.
  *
@@ -25,34 +27,43 @@
 #define _GSSAPIP_GENERIC_H_
 
 /*
- * $Id$
  */
 
 #if defined(_WIN32)
 #include "k5-int.h"
 #else
 #include "autoconf.h"
+#ifndef _KERNEL
 #ifdef HAVE_STDLIB_H
 #include <stdlib.h>
+#endif /* !_KERNEL */
 #endif
 #endif
 
 #include "k5-thread.h"
 
 #include "gssapi_generic.h"
-#include "gssapi_ext.h"
+
 #include "gssapi_err_generic.h"
+#ifndef _KERNEL
 #include <errno.h>
+#else
+#include <sys/errno.h>
+#endif /* !_KERNEL */
 
 #include "k5-platform.h"
 #include "k5-buf.h"
 typedef UINT64_TYPE gssint_uint64;
 
+#include "gssapi/gssapi_ext.h"
+
 /** helper macros **/
 
+#if 0 /* SUNW15resync - on Solaris g_OID_equal is in gssapi_ext.h */
 #define g_OID_equal(o1, o2)                                             \
         (((o1)->length == (o2)->length) &&                              \
         (memcmp((o1)->elements, (o2)->elements, (o1)->length) == 0))
+#endif
 
 /* this code knows that an int on the wire is 32 bits.  The type of
    num should be at least this big, or the extra shifts may do weird
@@ -75,7 +86,7 @@ typedef UINT64_TYPE gssint_uint64;
    (ptr) += 2;
 
 #define TWRITE_STR(ptr, str, len)               \
-   memcpy((ptr), (char *) (str), (len));        \
+  (void) memcpy((ptr), (char *) (str), (len)); \
    (ptr) += (len);
 
 #define TREAD_STR(ptr, str, len)                \
@@ -88,12 +99,23 @@ typedef UINT64_TYPE gssint_uint64;
 
 /** malloc wrappers; these may actually do something later */
 
+#ifdef _KERNEL
+#define xmalloc(n) MALLOC(n)
+#else
 #define xmalloc(n) malloc(n)
+#endif
+
 #define xrealloc(p,n) realloc(p,n)
 #ifdef xfree
 #undef xfree
 #endif
+
+#ifdef _KERNEL
+#define xfree_wrap(p,sze) kmem_free(p,sze)
+#else
+#define xfree_wrap(p,sze) free(p)
 #define xfree(p) free(p)
+#endif
 
 /** helper functions **/
 
@@ -202,6 +224,7 @@ char *g_strdup (char *str);
 
 /** declarations of internal name mechanism functions **/
 
+#if 0 /* SUNW15resync - mved to mglueP.h for sake of non-krb5 mechs */
 OM_uint32
 generic_gss_release_buffer(
     OM_uint32 *,        /* minor_status */
@@ -269,12 +292,16 @@ generic_gss_oid_decompose(
     gss_OID_desc *,     /* oid */
     int *);             /* suffix */
 
+#endif /* 0 */
+
+#ifndef _KERNEL
 int gssint_mecherrmap_init(void);
 void gssint_mecherrmap_destroy(void);
 OM_uint32 gssint_mecherrmap_map(OM_uint32 minor, const gss_OID_desc *oid);
 int gssint_mecherrmap_get(OM_uint32 minor, gss_OID mech_oid,
                           OM_uint32 *mech_minor);
 OM_uint32 gssint_mecherrmap_map_errcode(OM_uint32 errcode);
+#endif
 
 OM_uint32 generic_gss_create_empty_buffer_set
 (OM_uint32 * /*minor_status*/,

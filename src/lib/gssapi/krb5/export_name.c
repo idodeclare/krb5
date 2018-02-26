@@ -1,5 +1,8 @@
 /* -*- mode: c; indent-tabs-mode: nil -*- */
 /*
+ * Copyright (c) 1999, 2010, Oracle and/or its affiliates. All rights reserved.
+ */
+/*
  * lib/gssapi/krb5/export_name.c
  *
  * Copyright 1997, 2007 by the Massachusetts Institute of Technology.
@@ -52,8 +55,19 @@ OM_uint32 krb5_gss_export_name(OM_uint32  *minor_status,
     exported_name->value = NULL;
 
     if (! kg_validate_name(input_name)) {
+	    /* Solaris Kerberos: spruce-up the err msg */
+	    krb5_principal princ = (krb5_principal) input_name;
+	    char *s_name = NULL;
+	    int kret = krb5_unparse_name(context, princ, &s_name);
         if (minor_status)
             *minor_status = (OM_uint32) G_VALIDATE_FAILED;
+	    if (minor_status && kret == 0) {
+	        krb5_set_error_message(context, *minor_status,
+  "Input name principal '%s' is invalid (kg_validate_name()) for export_name",
+				    s_name);
+		save_error_info(*minor_status, context);
+		krb5_free_unparsed_name(context, s_name);
+	    }
         krb5_free_context(context);
         return(GSS_S_CALL_BAD_STRUCTURE|GSS_S_BAD_NAME);
     }

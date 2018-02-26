@@ -113,11 +113,11 @@ src/kdc/policy.c	usr/src/cmd/krb5/krb5kdc/policy.c
 src/kdc/policy.h	usr/src/cmd/krb5/krb5kdc/policy.h
 src/kdc/replay.c	usr/src/cmd/krb5/krb5kdc/replay.c
 src/kdc/rtest.c	NOTFOUND
-src/lib/glue4.c	usr/src/cmd/refer/glue4.c
+src/lib/glue4.c	NO
 src/lib/gssapi/generic/disp_com_err_status.c	usr/src/lib/gss_mechs/mech_krb5/mech/disp_com_err_status.c
 src/lib/gssapi/generic/disp_major_status.c	usr/src/lib/gss_mechs/mech_krb5/mech/disp_major_status.c
 src/lib/gssapi/generic/gssapiP_generic.h	usr/src/uts/common/gssapi/mechs/krb5/include/gssapiP_generic.h
-src/lib/gssapi/generic/gssapi_ext.h	usr/src/uts/common/gssapi/gssapi_ext.h
+src/lib/gssapi/generic/gssapi_ext.h	NO
 src/lib/gssapi/generic/gssapi_generic.c	NOTFOUND
 src/lib/gssapi/generic/gssapi_generic.h	usr/src/uts/common/gssapi/mechs/krb5/include/gssapi_generic.h
 src/lib/gssapi/generic/maptest.c	NOTFOUND

@@ -1,6 +1,7 @@
-/* -*- mode: c; indent-tabs-mode: nil -*- */
-/* #ident  "@(#)g_rel_buffer.c 1.2     96/02/06 SMI" */
-
+/*
+ * Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
+ * Use is subject to license terms.
+ */
 /*
  * Copyright 1996 by Sun Microsystems, Inc.
  *
@@ -27,7 +28,8 @@
  *  glue routine for gss_release_buffer
  */
 
-#include "gssapiP_generic.h"
+/* SUNW17PACresync - gssapi.h allows us to build in libgss also */
+#include "gssapi.h"
 
 #include <stdio.h>
 #ifdef HAVE_STDLIB_H
@@ -45,7 +47,7 @@ generic_gss_release_buffer(
     /* if buffer is NULL, return */
 
     if (buffer == GSS_C_NO_BUFFER)
-        return(GSS_S_COMPLETE);
+        return (GSS_S_COMPLETE);
 
     if (buffer->value) {
         free(buffer->value);

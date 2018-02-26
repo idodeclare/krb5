@@ -826,7 +826,7 @@ prepare_error_as (struct kdc_request_state *rstate, krb5_kdc_req *request, int e
 	free(errpkt.text.data);
 	return ENOMEM;
     }
-    if (e_data  != NULL&& e_data->data != NULL) {
+    if (e_data != NULL && e_data->data != NULL) {
 	errpkt.e_data = *e_data;
     } else {
 	errpkt.e_data.length = 0;

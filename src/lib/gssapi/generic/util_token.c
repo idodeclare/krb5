@@ -1,3 +1,7 @@
+/*
+ * Copyright 2007 Sun Microsystems, Inc.  All rights reserved.
+ * Use is subject to license terms.
+ */
 /* -*- mode: c; indent-tabs-mode: nil -*- */
 /*
  * Copyright 1993 by OpenVision Technologies, Inc.
@@ -22,13 +26,18 @@
  */
 
 #include "gssapiP_generic.h"
+
+#ifdef _KERNEL
+#include <sys/systm.h>
+#else
 #ifdef HAVE_MEMORY_H
 #include <memory.h>
 #endif
 #include <limits.h>
+#include <string.h>
+#endif /* _KERNEL */
 
 /*
- * $Id$
  */
 
 /* XXXX this code currently makes the assumption that a mech oid will
@@ -134,7 +143,7 @@ g_token_size(const gss_OID_desc * mech, unsigned int body_size)
 {
     /* set body_size to sequence contents size */
     body_size += 4 + (int) mech->length;         /* NEED overflow check */
-    return(1 + der_length_size(body_size) + body_size);
+   return(1 + der_length_size((int) body_size) + body_size);
 }
 
 /* fills in a buffer with the token header.  The buffer is assumed to
@@ -148,7 +157,8 @@ g_make_token_header(
     int tok_type)
 {
     *(*buf)++ = 0x60;
-    der_write_length(buf, (tok_type == -1) ?2:4 + mech->length + body_size);
+   der_write_length(buf,
+       (tok_type == -1) ? 2 : (int) (4 + mech->length + body_size));
     *(*buf)++ = 0x06;
     *(*buf)++ = (unsigned char) mech->length;
     TWRITE_STR(*buf, mech->elements, mech->length);

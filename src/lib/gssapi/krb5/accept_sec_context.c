@@ -1,3 +1,6 @@
+/*
+ * Copyright (c) 1999, 2010, Oracle and/or its affiliates. All rights reserved.
+ */
 /* -*- mode: c; indent-tabs-mode: nil -*- */
 /*
  * Copyright 2000, 2004, 2007, 2008  by the Massachusetts Institute of Technology.

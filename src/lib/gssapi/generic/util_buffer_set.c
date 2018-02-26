@@ -1,4 +1,8 @@
 /*
+ * Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
+ * Use is subject to license terms.
+ */
+/*
  * Copyright 2008 by the Massachusetts Institute of Technology.
  * All Rights Reserved.
  *
@@ -74,6 +78,7 @@ OM_uint32 generic_gss_add_buffer_set_member
 					       (set->count + 1) *
 						sizeof(gss_buffer_desc));
     if (set->elements == NULL) {
+	free(set);  /* SUNW17PACresync - MIT17 bug */
 	*minor_status = ENOMEM;
 	return GSS_S_FAILURE;
     }
@@ -82,10 +87,12 @@ OM_uint32 generic_gss_add_buffer_set_member
 
     p->value = malloc(member_buffer->length);
     if (p->value == NULL) {
+	free(set->elements); /* SUNW17PACresync - MIT17 bug */
+	free(set); /* SUNW17PACresync - MIT17 bug */
 	*minor_status = ENOMEM;
 	return GSS_S_FAILURE;
     }
-    memcpy(p->value, member_buffer->value, member_buffer->length);
+    (void) memcpy(p->value, member_buffer->value, member_buffer->length);
     p->length = member_buffer->length;
 
     set->count++;
@@ -108,7 +115,7 @@ OM_uint32 generic_gss_release_buffer_set
     }
 
     for (i = 0; i < (*buffer_set)->count; i++) {
-	generic_gss_release_buffer(&minor, &((*buffer_set)->elements[i]));
+      (void) generic_gss_release_buffer(&minor, &((*buffer_set)->elements[i]));
     }
 
     if ((*buffer_set)->elements != NULL) {

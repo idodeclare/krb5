@@ -22,7 +22,6 @@
  */
 
 /*
- * $Id$
  */
 
 #include "gssapiP_generic.h"

@@ -229,7 +229,7 @@ kdc_process_tgs_req(krb5_kdc_req *request, const krb5_fulladdr *from,
 		    krb5_keyblock **subkey,
 		    krb5_pa_data **pa_tgs_req)
 {
-    krb5_pa_data        * tmppa;
+    krb5_pa_data       ** tmppa;
     krb5_ap_req 	* apreq;
     krb5_error_code 	  retval;
     krb5_authdata **authdata = NULL;
@@ -239,17 +239,20 @@ kdc_process_tgs_req(krb5_kdc_req *request, const krb5_fulladdr *from,
     krb5_auth_context 	  auth_context = NULL;
     krb5_authenticator	* authenticator = NULL;
     krb5_checksum 	* his_cksum = NULL;
-    krb5_keyblock 	* key = NULL;
-    krb5_kvno 		  kvno = 0;
+/*    krb5_keyblock 	* key = NULL;*/
+/*    krb5_kvno 		  kvno = 0;*/
 
-    *nprincs = 0;
-
-    tmppa = find_pa_data(request->padata, KRB5_PADATA_AP_REQ);
-    if (!tmppa)
+    if (!request->padata)
+	return KRB5KDC_ERR_PADATA_TYPE_NOSUPP;
+    for (tmppa = request->padata; *tmppa; tmppa++) {
+	if ((*tmppa)->pa_type == KRB5_PADATA_AP_REQ)
+	    break;
+    }
+    if (!*tmppa)			/* cannot find any AP_REQ */
 	return KRB5KDC_ERR_PADATA_TYPE_NOSUPP;
 
-    scratch1.length = tmppa->length;
-    scratch1.data = (char *)tmppa->contents;
+    scratch1.length = (*tmppa)->length;
+    scratch1.data = (char *)(*tmppa)->contents;
     if ((retval = decode_krb5_ap_req(&scratch1, &apreq)))
 	return retval;
 
@@ -284,16 +287,20 @@ kdc_process_tgs_req(krb5_kdc_req *request, const krb5_fulladdr *from,
 	goto cleanup_auth_context;
 #endif
 
-    if ((retval = kdc_get_server_key(apreq->ticket, 0, foreign_server,
-				     krbtgt, nprincs, &key, &kvno)))
+/*
+    if ((retval = kdc_get_server_key(apreq->ticket, &key, &kvno)))
 	goto cleanup_auth_context;
+*/
     /*
-     * We do not use the KDB keytab because other parts of the TGS need the TGT key.
+     * XXX This is currently wrong but to fix it will require making a 
+     * new keytab for groveling over the kdb.
      */
+/*
     retval = krb5_auth_con_setuseruserkey(kdc_context, auth_context, key);
     krb5_free_keyblock(kdc_context, key);
     if (retval) 
 	goto cleanup_auth_context;
+*/
 
     if ((retval = krb5_rd_req_decoded_anyflag(kdc_context, &auth_context, apreq, 
 				      apreq->ticket->server, 
@@ -439,10 +446,12 @@ kdc_get_server_key(krb5_ticket *ticket, unsigned int flags,
 	return(retval);
     }
     if (more) {
+	krb5_db_free_principal(kdc_context, &server, nprincs);
 	return(KRB5KDC_ERR_PRINCIPAL_NOT_UNIQUE);
     } else if (*nprincs != 1) {
 	char *sname;
 
+	krb5_db_free_principal(kdc_context, &server, nprincs);
 	if (!krb5_unparse_name(kdc_context, ticket->server, &sname)) {
 	    limit_string(sname);
 	    krb5_klog_syslog(LOG_ERR,"TGS_REQ: UNKNOWN SERVER: server='%s'",
@@ -488,6 +497,7 @@ kdc_get_server_key(krb5_ticket *ticket, unsigned int flags,
         retval = KRB5KDC_ERR_S_PRINCIPAL_UNKNOWN;
         goto errout;
     }
+    *kvno = server_key->key_data_kvno;
     if ((*key = (krb5_keyblock *)malloc(sizeof **key))) {
 	retval = krb5_dbekd_decrypt_key_data(kdc_context, mkey_ptr,
 					     server_key,
@@ -1045,7 +1055,8 @@ validate_as_request(register krb5_kdc_req *request, krb5_db_entry client,
     /*
      * Check against local policy
      */
-    errcode = against_local_policy_as(request, client, server,
+    /* ILLUMOS transposition */
+    errcode = against_local_policy_as(request, server, client,
 				      kdc_time, status); 
     if (errcode)
 	return errcode;

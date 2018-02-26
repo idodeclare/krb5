@@ -1,32 +1,63 @@
 /*
+ * Copyright (c) 2001, 2010, Oracle and/or its affiliates. All rights reserved.
+ */
+
+
+/*
+ * WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING
+ *
+ *	Openvision retains the copyright to derivative works of
+ *	this source code.  Do *NOT* create a derivative of this
+ *	source code before consulting with your legal department.
+ *	Do *NOT* integrate *ANY* of this source code into another
+ *	product before consulting with your legal department.
+ *
+ *	For further information, read the top-level Openvision
+ *	copyright which is contained in the top-level MIT Kerberos
+ *	copyright.
+ *
+ * WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING
+ *
+ */
+
+
+/*
  * Copyright 1993 OpenVision Technologies, Inc., All Rights Reserved
  *
  */
 
-#include <gssapi/gssapi.h>
-#include <gssapi/gssapi_krb5.h> /* for gss_nt_krb5_name */
-#include <krb5.h>
 #include <kadm5/admin.h>
+#include <gssapi/gssapi.h>
+#include <gssapi_krb5.h>   /* for gss_nt_krb5_name */
+#include <krb5.h>
 #include <kadm5/kadm_rpc.h>
 #include <kadm5/server_internal.h>
-#include <kadm5/server_acl.h>
+#include <kadm5/srv/server_acl.h>
+#include <security/pam_appl.h>
+
 #include <syslog.h>
 #include <arpa/inet.h>  /* inet_ntoa */
-#include <adm_proto.h>  /* krb5_klog_syslog */
+#include <krb5/adm_proto.h>  /* krb5_klog_syslog */
+#include <libintl.h>
 #include "misc.h"
 #include <string.h>
 
-#define LOG_UNAUTH  "Unauthorized request: %s, %s, client=%s, service=%s, addr=%s"
-#define	LOG_DONE    "Request: %s, %s, %s, client=%s, service=%s, addr=%s"
+#define LOG_UNAUTH  gettext("Unauthorized request: %s, %s, " \
+			    "client=%s, service=%s, addr=%s")
+#define	LOG_DONE   gettext("Request: %s, %s, %s, client=%s, " \
+			    "service=%s, addr=%s")
 
 extern gss_name_t 			gss_changepw_name;
 extern gss_name_t			gss_oldchangepw_name;
 extern void *				global_server_handle;
+extern short l_port;
+
+char buf[33];
 
 #define CHANGEPW_SERVICE(rqstp) \
-	(cmp_gss_names_rel_1(acceptor_name(rqstp->rq_svccred), gss_changepw_name) |\
+	(cmp_gss_names_rel_1(acceptor_name(rqstp), gss_changepw_name) |\
 	 (gss_oldchangepw_name && \
-	  cmp_gss_names_rel_1(acceptor_name(rqstp->rq_svccred), \
+	  cmp_gss_names_rel_1(acceptor_name(rqstp), \
 			gss_oldchangepw_name)))
 
 
@@ -35,9 +66,61 @@ static int gss_to_krb5_name(kadm5_server_handle_t handle,
 
 static int gss_name_to_string(gss_name_t gss_name, gss_buffer_desc *str);
 
-static gss_name_t acceptor_name(gss_ctx_id_t context);
+static gss_name_t acceptor_name(struct svc_req * rqstp);
 
 gss_name_t rqst2name(struct svc_req *rqstp);
+
+kadm5_ret_t
+kadm5_get_priv(void *server_handle,
+    long *privs, gss_name_t clnt);
+
+gss_name_t
+get_clnt_name(struct svc_req * rqstp)
+{
+	OM_uint32 maj_stat, min_stat;
+	gss_name_t name;
+	rpc_gss_rawcred_t *raw_cred;
+	void *cookie;
+	gss_buffer_desc name_buff;
+
+	rpc_gss_getcred(rqstp, &raw_cred, NULL, &cookie);
+	name_buff.value = raw_cred->client_principal->name;
+	name_buff.length = raw_cred->client_principal->len;
+	maj_stat = gss_import_name(&min_stat, &name_buff,
+	    (gss_OID) GSS_C_NT_EXPORT_NAME, &name);
+	if (maj_stat != GSS_S_COMPLETE) {
+		return (NULL);
+	}
+	return (name);
+}
+
+char *
+client_addr(struct svc_req * req, char *buf)
+{
+	struct sockaddr *ca;
+	u_char *b;
+	char *frontspace = " ";
+
+	/*
+	 * Convert the caller's IP address to a dotted string
+	 */
+	ca = (struct sockaddr *)
+	    svc_getrpccaller(req->rq_xprt)->buf;
+
+	if (ca->sa_family == AF_INET) {
+		b = (u_char *) & ((struct sockaddr_in *) ca)->sin_addr;
+		(void) sprintf(buf, "%s(%d.%d.%d.%d) ", frontspace,
+		    b[0] & 0xFF, b[1] & 0xFF, b[2] & 0xFF, b[3] & 0xFF);
+	} else {
+		/*
+		 * No IP address to print. If there was a host name
+		 * printed, then we print a space.
+		 */
+		(void) sprintf(buf, frontspace);
+	}
+
+	return (buf);
+}
 
 static int cmp_gss_names(gss_name_t n1, gss_name_t n2)
 {
@@ -109,8 +192,9 @@ static kadm5_ret_t new_server_handle(krb5_ui_4 api_version,
 					  *out_handle)
 {
      kadm5_server_handle_t handle;
-
      *out_handle = NULL;
+	gss_name_t name;
+	OM_uint32 min_stat;
 
      if (! (handle = (kadm5_server_handle_t)
 	    malloc(sizeof(*handle))))
@@ -119,11 +203,17 @@ static kadm5_ret_t new_server_handle(krb5_ui_4 api_version,
      *handle = *(kadm5_server_handle_t)global_server_handle;
      handle->api_version = api_version;
 
-     if (! gss_to_krb5_name(handle, rqst2name(rqstp),
-			    &handle->current_caller)) {
+     if (!(name = get_clnt_name(rqstp))) {
 	  free(handle);
 	  return KADM5_FAILURE;
      }
+     if (! gss_to_krb5_name(handle, rqst2name(rqstp),
+			    &handle->current_caller)) {
+	  free(handle);
+		gss_release_name(&min_stat, &name);
+	  return KADM5_FAILURE;
+     }
+	gss_release_name(&min_stat, &name);
 
      *out_handle = handle;
      return 0;
@@ -160,11 +250,12 @@ static void free_server_handle(kadm5_server_handle_t handle)
  *
  * Unparses the client and server names into client_name and
  * server_name, both of which must be freed by the caller.  Returns 0
- * on success and -1 on failure.
+ * on success and -1 on failure. On failure client_name and server_name
+ * will point to null.
  */
+/* SUNW14resync */
 int setup_gss_names(struct svc_req *rqstp,
-		    gss_buffer_desc *client_name,
-		    gss_buffer_desc *server_name)
+    char **client_name, char **server_name)
 {
      OM_uint32 maj_stat, min_stat;
      gss_name_t server_gss_name;
@@ -213,6 +304,72 @@ static int cmp_gss_krb5_name(kadm5_server_handle_t handle,
      return status;
 }
 
+
+/*
+ * This routine primarily validates the username and password
+ * of the principal to be created, if a prior acl check for
+ * the 'u' privilege succeeds. Validation is done using
+ * the PAM `k5migrate' service. k5migrate normally stacks
+ * pam_unix_auth.so and pam_unix_account.so in its auth and
+ * account stacks respectively.
+ *
+ * Returns 1 (true), if validation is successful,
+ * else returns 0 (false).
+ */ 
+int verify_pam_pw(char *userdata, char *pwd) {
+	pam_handle_t *pamh;
+	int err = 0;
+	int result = 1;
+	char *user = NULL; 
+	char *ptr = NULL;
+
+	ptr = strchr(userdata, '@');
+	if (ptr != NULL) {
+		user = (char *)malloc(ptr - userdata + 1);
+		(void) strlcpy(user, userdata, (ptr - userdata) + 1);
+	} else {
+		user = (char *)strdup(userdata);
+	}
+
+	err = pam_start("k5migrate", user, NULL, &pamh);
+	if (err != PAM_SUCCESS) {
+		syslog(LOG_ERR, "verify_pam_pw: pam_start() failed, %s\n",
+				pam_strerror(pamh, err));
+		if (user)
+			free(user);
+		return (0);
+	}
+	if (user)
+		free(user);
+
+	err = pam_set_item(pamh, PAM_AUTHTOK, (void *)pwd);
+	if (err != PAM_SUCCESS) {
+		syslog(LOG_ERR, "verify_pam_pw: pam_set_item() failed, %s\n",
+				pam_strerror(pamh, err));
+		(void) pam_end(pamh, err);
+		return (0);
+	}
+
+	err = pam_authenticate(pamh, PAM_SILENT);
+	if (err != PAM_SUCCESS) {
+		syslog(LOG_ERR, "verify_pam_pw: pam_authenticate() "
+				"failed, %s\n", pam_strerror(pamh, err));
+		(void) pam_end(pamh, err);
+		return (0);
+	}
+
+	err = pam_acct_mgmt(pamh, PAM_SILENT);
+	if (err != PAM_SUCCESS) {
+		syslog(LOG_ERR, "verify_pam_pw: pam_acct_mgmt() failed, %s\n",
+				pam_strerror(pamh, err));
+		(void) pam_end(pamh, err);
+		return (0);
+	}
+
+	(void) pam_end(pamh, PAM_SUCCESS);
+	return (result);
+}
+
 static int gss_to_krb5_name(kadm5_server_handle_t handle,
 		     gss_name_t gss_name, krb5_principal *princ)
 {
@@ -222,7 +379,7 @@ static int gss_to_krb5_name(kadm5_server_handle_t handle,
      int success;
 
      status = gss_display_name(&minor_stat, gss_name, &gss_str, &gss_type);
-     if ((status != GSS_S_COMPLETE) || (gss_type != gss_nt_krb5_name))
+     if ((status != GSS_S_COMPLETE) || (!g_OID_equal(gss_type, gss_nt_krb5_name)))
 	  return 0;
      success = (krb5_parse_name(handle->context, gss_str.value, princ) == 0);
      gss_release_buffer(&minor_stat, &gss_str);
@@ -302,14 +459,14 @@ generic_ret *
 create_principal_2_svc(cprinc_arg *arg, struct svc_req *rqstp)
 {
     static generic_ret		ret;
-    char			*prime_arg;
+    char			*prime_arg = NULL;
     gss_buffer_desc		client_name, service_name;
     OM_uint32			minor_stat;
     kadm5_server_handle_t	handle;
     restriction_t		*rp;
     const char			*errmsg = NULL;
 
-    xdr_free(xdr_generic_ret, &ret);
+    xdr_free(xdr_generic_ret, (char *) &ret);
 
     if ((ret.code = new_server_handle(arg->api_version, rqstp, &handle)))
 	goto exit_func;
@@ -327,26 +484,45 @@ create_principal_2_svc(cprinc_arg *arg, struct svc_req *rqstp)
 	 ret.code = KADM5_BAD_PRINCIPAL;
 	 goto exit_func;
     }
+	if (!(name = get_clnt_name(rqstp))) {
+		ret.code = KADM5_FAILURE;
+		goto exit_func;
+	}
+
+	if (kadm5int_acl_check(handle->context, name, ACL_MIGRATE,
+	    arg->rec.principal, &rp) &&
+	    verify_pam_pw(prime_arg, arg->passwd)) {
+		policy_migrate = 1;
+    }
 
     if (CHANGEPW_SERVICE(rqstp)
-	|| !kadm5int_acl_check(handle->context, rqst2name(rqstp), ACL_ADD,
-		      arg->rec.principal, &rp)
+	|| (!kadm5int_acl_check(handle->context, name, ACL_ADD,
+		      arg->rec.principal, &rp) &&
+		!(policy_migrate))
 	|| kadm5int_acl_impose_restrictions(handle->context,
 				   &arg->rec, &arg->mask, rp)) {
 	 ret.code = KADM5_AUTH_ADD;
+
+		audit_kadmind_unauth(rqstp->rq_xprt, l_port,
+				    "kadm5_create_principal",
+				    prime_arg, client_name);
 	 log_unauth("kadm5_create_principal", prime_arg,
-		    &client_name, &service_name, rqstp);
+		client_name, service_name, client_addr(rqstp, buf));
     } else {
 	 ret.code = kadm5_create_principal((void *)handle,
 						&arg->rec, arg->mask,
 						arg->passwd);
+	/* Solaris Kerberos */
+	if( ret.code != 0 )
+	     errmsg = krb5_get_error_message(handle ? handle->context : NULL,
+	         ret.code);
 
-	 if( ret.code != 0 )
-	     errmsg = krb5_get_error_message(handle->context, ret.code);
-
+	audit_kadmind_auth(rqstp->rq_xprt, l_port,
+				"kadm5_create_principal",
+				prime_arg, client_name, ret.code);
 	 log_done("kadm5_create_principal", prime_arg,
 		  errmsg ? errmsg : "success",
-		  &client_name, &service_name, rqstp);
+	    client_name, service_name, client_addr(rqstp, buf));
 
 	if (errmsg != NULL)
 		krb5_free_error_message(handle->context, errmsg);

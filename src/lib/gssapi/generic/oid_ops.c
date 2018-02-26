@@ -1,4 +1,8 @@
-/* #pragma ident	"@(#)oid_ops.c	1.19	04/02/23 SMI" */
+/*
+ * Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
+ * Use is subject to license terms.
+ */
+
 /*
  * lib/gssapi/generic/oid_ops.c
  *
@@ -37,9 +41,16 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-#include <gssapi/gssapi_generic.h>
+#include <gssapi_generic.h>
 #include <errno.h>
 #include <ctype.h>
+
+/*
+ * this oid is defined in the oid structure but not exported to
+ * external callers; we must still ensure that we do not delete it.
+ */
+extern const gss_OID_desc * const gss_nt_service_name;
+
 
 OM_uint32
 generic_gss_release_oid(minor_status, oid)
@@ -91,22 +102,29 @@ generic_gss_copy_oid(minor_status, oid, new_oid)
 {
 	gss_OID		p;
 
+	if (minor_status)
 	*minor_status = 0;
+
+	if (new_oid == NULL)
+		return (GSS_S_CALL_INACCESSIBLE_WRITE);
+
+	if (oid == GSS_C_NO_OID)
+		return (GSS_S_CALL_INACCESSIBLE_READ);
 
 	p = (gss_OID) malloc(sizeof(gss_OID_desc));
 	if (!p) {
-	    *minor_status = ENOMEM;
-	    return GSS_S_FAILURE;
+		if (minor_status) *minor_status = ENOMEM;
+		return (GSS_S_FAILURE);
 	}
 	p->length = oid->length;
 	p->elements = malloc(p->length);
 	if (!p->elements) {
 		free(p);
-		return GSS_S_FAILURE;
+		return (GSS_S_FAILURE);
 	}
-	memcpy(p->elements, oid->elements, p->length);
+	(void) memcpy(p->elements, oid->elements, p->length);
 	*new_oid = p;
-	return(GSS_S_COMPLETE);
+	return (GSS_S_COMPLETE);
 }
 
 
@@ -219,7 +237,10 @@ generic_gss_oid_to_str(minor_status, oid, oid_str)
     const gss_OID_desc * const oid;
     gss_buffer_t	oid_str;
 {
+    char		numstr[128];
     OM_uint32		number;
+    int			numshift;
+    OM_uint32 string_length;
     OM_uint32 i;
     unsigned char	*cp;
     char		*bp;
@@ -241,29 +262,60 @@ generic_gss_oid_to_str(minor_status, oid, oid_str)
 
     /* Decoded according to krb5/gssapi_krb5.c */
 
+    /* First determine the size of the string */
+    string_length = 0;
+    number = 0;
+    numshift = 0;
     cp = (unsigned char *) oid->elements;
     number = (unsigned long) cp[0];
-    krb5int_buf_init_dynamic(&buf);
-    krb5int_buf_add_fmt(&buf, "{ %lu %lu ", (unsigned long)number/40,
-			(unsigned long)number%40);
-    number = 0;
-    cp = (unsigned char *) oid->elements;
+    snprintf(numstr, sizeof(numstr), "%lu ", (unsigned long)number/40);
+    string_length += strlen(numstr);
+    snprintf(numstr, sizeof(numstr), "%lu ", (unsigned long)number%40);
+    string_length += strlen(numstr);
     for (i=1; i<oid->length; i++) {
-	number = (number << 7) | (cp[i] & 0x7f);
+	if ((OM_uint32) (numshift+7) < (sizeof (OM_uint32)*8)) {/* XXX */
+	    number = (number << 7) | (cp[i] & 0x7f);
+	    numshift += 7;
+	}
+	else {
+	    return(GSS_S_FAILURE);
+	}
 	if ((cp[i] & 0x80) == 0) {
-	    krb5int_buf_add_fmt(&buf, "%lu ", (unsigned long)number);
+	    snprintf(numstr, sizeof(numstr), "%lu ", (unsigned long)number);
+	    string_length += strlen(numstr);
 	    number = 0;
+	    numshift = 0;
 	}
     }
-    krb5int_buf_add(&buf, "}");
-    bp = krb5int_buf_data(&buf);
-    if (bp == NULL) {
-	*minor_status = ENOMEM;
-	return(GSS_S_FAILURE);
+    /*
+     * If we get here, we've calculated the length of "n n n ... n ".  Add 4
+     * here for "{ " and "}\0".
+     */
+    string_length += 4;
+    if ((bp = (char *) malloc(string_length))) {
+	strcpy(bp, "{ ");
+	number = (OM_uint32) cp[0];
+	snprintf(numstr, sizeof(numstr), "%lu ", (unsigned long)number/40);
+	strcat(bp, numstr);
+	snprintf(numstr, sizeof(numstr), "%lu ", (unsigned long)number%40);
+	strcat(bp, numstr);
+	number = 0;
+	cp = (unsigned char *) oid->elements;
+	for (i=1; i<oid->length; i++) {
+	    number = (number << 7) | (cp[i] & 0x7f);
+	    if ((cp[i] & 0x80) == 0) {
+	        snprintf(numstr, sizeof(numstr), "%lu ", (unsigned long)number);
+		strcat(bp, numstr);
+		number = 0;
+	    }
+	}
+	strcat(bp, "}");
+	oid_str->length = strlen(bp)+1;
+	oid_str->value = (void *) bp;
+	return(GSS_S_COMPLETE);
     }
-    oid_str->length = krb5int_buf_len(&buf)+1;
-    oid_str->value = (void *) bp;
-    return(GSS_S_COMPLETE);
+    *minor_status = ENOMEM;
+    return(GSS_S_FAILURE);
 }
 
 OM_uint32
@@ -277,7 +329,7 @@ generic_gss_str_to_oid(minor_status, oid_str, oid)
     long	numbuf;
     long	onumbuf;
     OM_uint32	nbytes;
-    int		i;
+    int		index;
     unsigned char *op;
 
     if (minor_status != NULL)
@@ -316,8 +368,7 @@ generic_gss_str_to_oid(minor_status, oid_str, oid)
     }
     while ((bp < &cp[oid_str->length]) && isdigit(*bp))
 	bp++;
-    while ((bp < &cp[oid_str->length]) &&
-	   (isspace(*bp) || *bp == '.'))
+    while ((bp < &cp[oid_str->length]) && (isspace(*bp) || *bp == '.'))
 	bp++;
     if (sscanf((char *)bp, "%ld", &numbuf) != 1) {
 	*minor_status = EINVAL;
@@ -380,12 +431,12 @@ generic_gss_str_to_oid(minor_status, oid_str, oid)
 		}
 		numbuf = onumbuf;
 		op += nbytes;
-		i = -1;
+		index = -1;
 		while (numbuf) {
-		    op[i] = (unsigned char) numbuf & 0x7f;
-		    if (i != -1)
-			op[i] |= 0x80;
-		    i--;
+		    op[index] = (unsigned char) numbuf & 0x7f;
+		    if (index != -1)
+			op[index] |= 0x80;
+		    index--;
 		    numbuf >>= 7;
 		}
 		while (isdigit(*bp))
@@ -511,7 +562,7 @@ generic_gss_oid_decompose(
  * PERFORMANCE OF THIS SOFTWARE.
  */
 OM_uint32
-generic_gss_copy_oid_set(
+gssint_copy_oid_set(
     OM_uint32 *minor_status,
     const gss_OID_set_desc * const oidset,
     gss_OID_set *new_oidset
@@ -520,7 +571,7 @@ generic_gss_copy_oid_set(
     gss_OID_set_desc *copy;
     OM_uint32 minor = 0;
     OM_uint32 major = GSS_S_COMPLETE;
-    OM_uint32 i;
+    OM_uint32 index;
 
     if (minor_status != NULL)
 	*minor_status = 0;
@@ -546,9 +597,9 @@ generic_gss_copy_oid_set(
     }
     copy->count = oidset->count;
 
-    for (i = 0; i < copy->count; i++) {
-	gss_OID_desc *out = &copy->elements[i];
-	gss_OID_desc *in = &oidset->elements[i];
+    for (index = 0; index < copy->count; index++) {
+	gss_OID_desc *out = &copy->elements[index];
+	gss_OID_desc *in = &oidset->elements[index];
 
 	if ((out->elements = (void *) malloc(in->length)) == NULL) {
 	    major = GSS_S_FAILURE;
@@ -566,4 +617,3 @@ done:
 
     return (major);
 }
-

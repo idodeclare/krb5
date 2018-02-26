@@ -1,3 +1,7 @@
+/*
+ * Copyright 2008 Sun Microsystems, Inc.  All rights reserved.
+ * Use is subject to license terms.
+ */
 /* -*- mode: c; indent-tabs-mode: nil -*- */
 /*
  * Copyright 1993 by OpenVision Technologies, Inc.
@@ -22,7 +26,6 @@
  */
 
 /*
- * $Id$
  */
 
 /*
@@ -30,12 +33,20 @@
  */
 
 #include "gssapiP_generic.h"
+#ifndef	_KERNEL
+#include "gss_libinit.h"
+#endif
 
 #ifdef HAVE_SYS_TYPES_H
 #include <sys/types.h>
 #endif
+
+#ifdef	_KERNEL
+#include <sys/fcntl.h>
+#else
 #include <fcntl.h>
 #include <limits.h>
+#endif
 
 #ifdef HAVE_BSD_DB
 #include <sys/file.h>
@@ -55,6 +66,10 @@ typedef struct _vkey {
 #define V_CTX_ID        3
 #define V_LCTX_ID       4
 
+/* SUNW15resync
+   beware some of the uses below of type look dubious but seem
+   to have been working in Solaris for a long time */
+
 /* All these functions return 0 on failure, and non-zero on success */
 
 static int g_save(db, type, ptr)
@@ -72,6 +87,11 @@ static int g_save(db, type, ptr)
     vkey vk;
     DBT key;
 
+#ifndef	_KERNEL
+   ret = gssint_initialize_library();
+   if (ret)
+       return 0;
+#endif
     ret = k5_mutex_lock(&db->mutex);
     if (ret)
         return 0;
@@ -88,11 +108,16 @@ static int g_save(db, type, ptr)
     key.size = sizeof(vk);
 
     ret = ((*((*vdb)->put))(*vdb, &key, &dbtone, 0) == 0);
-    k5_mutex_unlock(&db->mutex);
+   (void) k5_mutex_unlock(&db->mutex);
     return ret;
 #else
     g_set_elt *gs;
 
+#ifndef _KERNEL
+   ret = gssint_initialize_library();
+   if (ret)
+       return 0;
+#endif
     ret = k5_mutex_lock(&db->mutex);
     if (ret)
         return 0;
@@ -101,12 +126,13 @@ static int g_save(db, type, ptr)
 
     if (!*gs)
         if (g_set_init(gs)) {
-            k5_mutex_unlock(&db->mutex);
+	 (void) k5_mutex_unlock(&db->mutex);
             return(0);
         }
 
-    ret = (g_set_entry_add(gs, ptr, type) == 0);
-    k5_mutex_unlock(&db->mutex);
+   /* SUNW15resync */
+   ret = (g_set_entry_add(gs, ptr, (void *)(intptr_t)type) == 0);
+   (void) k5_mutex_unlock(&db->mutex);
     return ret;
 #endif
 }
@@ -132,7 +158,7 @@ static int g_validate(db, type, ptr)
 
     vdb = (DB **) &db->data;
     if (!*vdb) {
-        k5_mutex_unlock(&db->mutex);
+      (void) k5_mutex_unlock(&db->mutex);
         return(0);
     }
 
@@ -143,11 +169,11 @@ static int g_validate(db, type, ptr)
     key.size = sizeof(vk);
 
     if ((*((*vdb)->get))(*vdb, &key, &value, 0)) {
-        k5_mutex_unlock(&db->mutex);
+      (void) k5_mutex_unlock(&db->mutex);
         return(0);
     }
 
-    k5_mutex_unlock(&db->mutex);
+   (void) k5_mutex_unlock(&db->mutex);
     return((value.size == sizeof(one)) &&
            (*((int *) value.data) == one));
 #else
@@ -160,19 +186,20 @@ static int g_validate(db, type, ptr)
 
     gs = (g_set_elt *) &db->data;
     if (!*gs) {
-        k5_mutex_unlock(&db->mutex);
+      (void) k5_mutex_unlock(&db->mutex);
         return(0);
     }
 
     if (g_set_entry_get(gs, ptr, (void **) &value)) {
-        k5_mutex_unlock(&db->mutex);
+      (void) k5_mutex_unlock(&db->mutex);
         return(0);
     }
-    k5_mutex_unlock(&db->mutex);
-    return(value == type);
+   (void) k5_mutex_unlock(&db->mutex);
+   return((intptr_t)value == (intptr_t)type); /* SUNW15resync */
 #endif
 }
 
+/*ARGSUSED*/
 static int g_delete(db, type, ptr)
     g_set *db;
 #ifdef HAVE_BSD_DB
@@ -194,7 +221,7 @@ static int g_delete(db, type, ptr)
 
     vdb = (DB **) &db->data;
     if (!*vdb) {
-        k5_mutex_unlock(&db->mutex);
+      (void) k5_mutex_unlock(&db->mutex);
         return(0);
     }
 
@@ -205,7 +232,7 @@ static int g_delete(db, type, ptr)
     key.size = sizeof(vk);
 
     ret = ((*((*vdb)->del))(*vdb, &key, 0) == 0);
-    k5_mutex_unlock(&db->mutex);
+   (void) k5_mutex_unlock(&db->mutex);
     return ret;
 #else
     g_set_elt *gs;
@@ -216,15 +243,15 @@ static int g_delete(db, type, ptr)
 
     gs = (g_set_elt *) &db->data;
     if (!*gs) {
-        k5_mutex_unlock(&db->mutex);
+      (void) k5_mutex_unlock(&db->mutex);
         return(0);
     }
 
     if (g_set_entry_delete(gs, ptr)) {
-        k5_mutex_unlock(&db->mutex);
+      (void) k5_mutex_unlock(&db->mutex);
         return(0);
     }
-    k5_mutex_unlock(&db->mutex);
+   (void) k5_mutex_unlock(&db->mutex);
     return(1);
 #endif
 }

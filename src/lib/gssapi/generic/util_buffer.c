@@ -22,7 +22,6 @@
  */
 
 /*
- * $Id$
  */
 
 #include "gssapiP_generic.h"
@@ -41,5 +40,5 @@ int g_make_string_buffer(const char *str, gss_buffer_t buffer)
         return(0);
     }
 
-    return(1);
+    return (1);
 }

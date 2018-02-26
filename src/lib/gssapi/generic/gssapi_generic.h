@@ -1,5 +1,10 @@
 /* -*- mode: c; indent-tabs-mode: nil -*- */
 /*
+ * Copyright 2008 Sun Microsystems, Inc.  All rights reserved.
+ * Use is subject to license terms.
+ */
+
+/*
  * Copyright 1993 by OpenVision Technologies, Inc.
  *
  * Permission to use, copy, modify, distribute, and sell this software
@@ -25,7 +30,6 @@
 #define _GSSAPI_GENERIC_H_
 
 /*
- * $Id$
  */
 
 #include <gssapi/gssapi.h>
@@ -42,6 +46,11 @@
         (buf)->value == NULL || (buf)->length == 0)
 
 GSSAPIGENERIC_BEGIN_DECLS
+
+/* SUNW14resync */
+#ifndef GSS_DLLIMP
+#define GSS_DLLIMP
+#endif
 
 /* Deprecated MIT krb5 oid names provided for compatibility.
  * The correct oids (GSS_C_NT_USER_NAME, etc) from rfc 2744

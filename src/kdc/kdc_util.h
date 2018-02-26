@@ -1,4 +1,9 @@
 /*
+ * Copyright 2008 Sun Microsystems, Inc.  All rights reserved.
+ * Use is subject to license terms.
+ */
+
+/*
  * kdc/kdc_util.h
  *
  * Portions Copyright (C) 2007 Apple Inc.
@@ -32,6 +37,10 @@
 
 #include "kdb.h"
 #include "kdb_ext.h"
+
+#ifdef	__cplusplus
+extern "C" {
+#endif
 
 typedef struct _krb5_fulladdr {
     krb5_address *	address;
@@ -137,9 +146,9 @@ krb5_error_code setup_server_realm (krb5_principal);
 void kdc_err(krb5_context call_context, errcode_t code, const char *fmt, ...);
 
 /* network.c */
-krb5_error_code listen_and_process (void);
-krb5_error_code setup_network (void);
-krb5_error_code closedown_network (void);
+krb5_error_code listen_and_process (const char *);
+krb5_error_code setup_network (const char *);
+krb5_error_code closedown_network (const char *);
 
 /* policy.c */
 int against_local_policy_as (krb5_kdc_req *, krb5_db_entry,
@@ -199,6 +208,10 @@ handle_authdata (krb5_context context,
 krb5_boolean kdc_check_lookaside (krb5_data *, krb5_data **);
 void kdc_insert_lookaside (krb5_data *, krb5_data *);
 void kdc_free_lookaside(krb5_context);
+
+/* which way to convert key? */
+#define CONVERT_INTO_DB	0
+#define CONVERT_OUTOF_DB 1
 
 /* kdc_util.c */
 krb5_error_code
@@ -365,4 +378,4 @@ krb5_error_code kdc_preauth_get_cookie(struct kdc_request_state *state,
  * RFC 4556: KRB5KDC_ERR_DH_KEY_PARAMETERS_NOT_ACCEPTED */
 #define KRB5KDC_ERR_KEY_TOO_WEAK KRB5KDC_ERR_DH_KEY_PARAMETERS_NOT_ACCEPTED
 
-#endif /* __KRB5_KDC_UTIL__ */
+#endif	/* !__KRB5_KDC_UTIL__ */

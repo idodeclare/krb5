@@ -1,3 +1,7 @@
+/*
+ * Copyright 2007 Sun Microsystems, Inc.  All rights reserved.
+ * Use is subject to license terms.
+ */
 /* -*- mode: c; indent-tabs-mode: nil -*- */
 /*
  * Copyright 1993 by OpenVision Technologies, Inc.
@@ -22,7 +26,6 @@
  */
 
 /*
- * $Id$
  */
 
 /* This file could be OS specific */
@@ -30,6 +33,8 @@
 #include <sys/param.h>
 
 #include "gssapiP_generic.h"
+#include <strings.h> /* SUNW15resync */
+#include <unistd.h>  /* SUNW15resync */
 
 #ifndef MAXHOSTNAMELEN
 #define MAXHOSTNAMELEN 64

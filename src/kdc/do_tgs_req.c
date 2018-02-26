@@ -1,4 +1,10 @@
 /*
+ * Copyright 2008 Sun Microsystems, Inc.  All rights reserved.
+ * Use is subject to license terms.
+ */
+
+
+/*
  * kdc/do_tgs_req.c
  *
  * Copyright 1990,1991,2001,2007,2008,2009 by the Massachusetts Institute of Technology.
@@ -55,6 +61,7 @@
  */
 
 #include "k5-int.h"
+#include "com_err.h"
 
 #include <syslog.h>
 #ifdef HAVE_NETINET_IN_H
@@ -71,13 +78,16 @@
 #include "adm_proto.h"
 #include <ctype.h>
 
-static void 
-find_alternate_tgs(krb5_kdc_req *,krb5_db_entry *,
-                   krb5_boolean *,int *);
+extern krb5_error_code setup_server_realm(krb5_principal);
 
-static krb5_error_code 
-prepare_error_tgs(struct kdc_request_state *, krb5_kdc_req *,krb5_ticket *,int,
-                  krb5_principal,krb5_data **,const char *);
+static void
+find_alternate_tgs(krb5_kdc_req *, krb5_db_entry *,
+                   krb5_boolean *,int *,
+		   		const krb5_fulladdr *from, char *cname);
+
+static krb5_error_code
+prepare_error_tgs(struct kdc_request_state *, krb5_kdc_req *, krb5_ticket *,
+    int, krb5_principal, krb5_data **, const char *);
 
 static krb5_int32
 prep_reprocess_req(krb5_kdc_req *,krb5_principal *);
@@ -87,8 +97,8 @@ krb5_error_code
 process_tgs_req(krb5_data *pkt, const krb5_fulladdr *from,
                 krb5_data **response)
 {
-    krb5_keyblock * subkey = 0;
-    krb5_kdc_req *request = 0;
+    krb5_keyblock * subkey = NULL;
+    krb5_kdc_req *request = NULL;
     krb5_db_entry server;
     krb5_kdc_rep reply;
     krb5_enc_kdc_rep_part reply_encpart;
@@ -107,13 +117,18 @@ process_tgs_req(krb5_data *pkt, const krb5_fulladdr *from,
     krb5_keyblock *reply_key = NULL;
     krb5_keyblock *mkey_ptr;
     krb5_key_data  *server_key;
-    char *cname = 0, *sname = 0, *altcname = 0;
+    char *cname = 0, *sname = 0, *altcname = 0, *tmp = 0;
+    const char *fromstring = 0;
     krb5_last_req_entry *nolrarray[2], nolrentry;
     krb5_enctype useenctype;
     int errcode, errcode2;
     register int i;
     int firstpass = 1;
     const char        *status = 0;
+    char ktypestr[128];
+    char rep_etypestr[128];
+    char fromstringbuf[70];
+    long long tmp_server_times, tmp_realm_times;
     krb5_enc_tkt_part *header_enc_tkt = NULL; /* ticket granting or evidence ticket */
     krb5_db_entry client, krbtgt;
     int c_nprincs = 0, k_nprincs = 0;
@@ -131,11 +146,15 @@ process_tgs_req(krb5_data *pkt, const krb5_fulladdr *from,
     krb5_data scratch;
 
     session_key.contents = NULL;
+    (void) memset(&encrypting_key, 0, sizeof(krb5_keyblock));
+    (void) memset(&session_key, 0, sizeof(krb5_keyblock));
     
     retval = decode_krb5_tgs_req(pkt, &request);
     if (retval)
         return retval;
 
+    ktypes2str(ktypestr, sizeof(ktypestr),
+	       request->nktypes, request->ktype);
     /*
      * setup_server_realm() sets up the global realm-specific data pointer.
      */
@@ -143,6 +162,19 @@ process_tgs_req(krb5_data *pkt, const krb5_fulladdr *from,
         krb5_free_kdc_req(kdc_context, request);
         return retval;
     }
+
+    fromstring = inet_ntop(ADDRTYPE2FAMILY(from->address->addrtype),
+			   from->address->contents,
+			   fromstringbuf, sizeof(fromstringbuf));
+    if (!fromstring)
+	fromstring = "<unknown>";
+
+    if ((errcode = krb5_unparse_name(kdc_context, request->server, &sname))) {
+	status = "UNPARSING SERVER";
+	goto cleanup;
+    }
+    limit_string(sname);
+
     errcode = kdc_process_tgs_req(request, from, pkt, &header_ticket,
                                   &krbtgt, &k_nprincs, &subkey, &pa_tgs_req);
     if (header_ticket && header_ticket->enc_part2 &&
@@ -193,6 +225,8 @@ process_tgs_req(krb5_data *pkt, const krb5_fulladdr *from,
      * decrypted with the session key.
      */
 
+    authtime = header_ticket->enc_part2->times.authtime;
+
     /* XXX make sure server here has the proper realm...taken from AP_REQ
        header? */
 
@@ -231,7 +265,7 @@ tgt_again:
          * might be a request for a TGT for some other realm; we
          * should do our best to find such a TGS in this db
          */
-        if (firstpass ) {
+	if (firstpass && krb5_is_tgs_principal(request->server) == TRUE) {
 
             if ( krb5_is_tgs_principal(request->server) == TRUE) { /* Principal is a name of krb ticket service */
                 if (krb5_princ_size(kdc_context, request->server) == 2) { 
@@ -241,7 +275,8 @@ tgt_again:
 
                     if (!tgs_1 || !data_eq(*server_1, *tgs_1)) {
                         krb5_db_free_principal(kdc_context, &server, nprincs);
-                        find_alternate_tgs(request, &server, &more, &nprincs);
+                        find_alternate_tgs(request, &server, &more, &nprincs,
+				      from, cname);
                         firstpass = 0;
                         goto tgt_again;
                     }
@@ -426,10 +461,14 @@ tgt_again:
      */
     if (!(header_enc_tkt->times.starttime))
         header_enc_tkt->times.starttime = header_enc_tkt->times.authtime;
+    if (!(header_ticket->enc_part2->times.starttime))
+	header_ticket->enc_part2->times.starttime =
+	    header_ticket->enc_part2->times.authtime;
 
     /* don't use new addresses unless forwarded, see below */
 
     enc_tkt_reply.caddrs = header_enc_tkt->caddrs;
+    enc_tkt_reply.caddrs = header_ticket->enc_part2->caddrs;
     /* noaddrarray[0] = 0; */
     reply_encpart.caddrs = 0;/* optional...don't put it in */
     reply_encpart.enc_padata = NULL;
@@ -459,7 +498,8 @@ tgt_again:
         enc_tkt_reply.caddrs = request->addresses;
         reply_encpart.caddrs = request->addresses;
     }        
-    if (isflagset(header_enc_tkt->flags, TKT_FLG_FORWARDED))
+    if (isflagset(header_enc_tkt->flags, TKT_FLG_FORWARDED) ||
+        isflagset(header_ticket->enc_part2->flags, TKT_FLG_FORWARDED))
         setflag(enc_tkt_reply.flags, TKT_FLG_FORWARDED);
 
     if (isflagset(request->kdc_options, KDC_OPT_PROXIABLE))
@@ -512,16 +552,35 @@ tgt_again:
         /* not a renew request */
         enc_tkt_reply.times.starttime = kdc_time;
         until = (request->till == 0) ? kdc_infinity : request->till;
+
+	/* SUNW */
+        tmp_server_times = (long long) enc_tkt_reply.times.starttime 
+	  + server.max_life;
+
+        tmp_realm_times = (long long) enc_tkt_reply.times.starttime
+	  + max_life_for_realm;
+
         enc_tkt_reply.times.endtime =
-            min(until, min(enc_tkt_reply.times.starttime + server.max_life,
-               min(enc_tkt_reply.times.starttime + max_life_for_realm,
-                   header_enc_tkt->times.endtime)));
+  	  min(until,
+	    min(tmp_server_times,
+		min(tmp_realm_times,
+			min(header_ticket->enc_part2->times.endtime,
+			    KRB5_KDB_EXPIRATION)))); /* SUNW */
+/*
+	enc_tkt_reply.times.endtime =
+	    min(until, min(enc_tkt_reply.times.starttime + server.max_life,
+			   min(enc_tkt_reply.times.starttime + max_life_for_realm,
+			       min(header_ticket->enc_part2->times.endtime)));
+*/
         if (isflagset(request->kdc_options, KDC_OPT_RENEWABLE_OK) &&
             (enc_tkt_reply.times.endtime < request->till) &&
-            isflagset(header_enc_tkt->flags, TKT_FLG_RENEWABLE)) {
+	    isflagset(header_ticket->enc_part2->flags,
+		  TKT_FLG_RENEWABLE)) {
             setflag(request->kdc_options, KDC_OPT_RENEWABLE);
             request->rtime =
-                min(request->till, header_enc_tkt->times.renew_till);
+		min(request->till,
+		    min(KRB5_KDB_EXPIRATION,
+		    header_ticket->enc_part2->times.renew_till));
         }
     }
     rtime = (request->rtime == 0) ? kdc_infinity : request->rtime;
@@ -530,12 +589,12 @@ tgt_again:
         /* already checked above in policy check to reject request for a
            renewable ticket using a non-renewable ticket */
         setflag(enc_tkt_reply.flags, TKT_FLG_RENEWABLE);
+	tmp_realm_times =  (long long) enc_tkt_reply.times.starttime +
+		min(server.max_renewable_life,max_renewable_life_for_realm);
         enc_tkt_reply.times.renew_till =
                         min(rtime,
-                            min(header_enc_tkt->times.renew_till,
-                                enc_tkt_reply.times.starttime +
-                                min(server.max_renewable_life,
-                                max_renewable_life_for_realm)));
+		min(header_ticket->enc_part2->times.renew_till,
+				min (tmp_realm_times, KRB5_KDB_EXPIRATION)));
     } else {
         enc_tkt_reply.times.renew_till = 0;
     }

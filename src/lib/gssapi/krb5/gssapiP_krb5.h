@@ -1,5 +1,8 @@
 /* -*- mode: c; indent-tabs-mode: nil -*- */
 /*
+ * Copyright (c) 1999, 2010, Oracle and/or its affiliates. All rights reserved.
+ */
+/*
  * Copyright 2000, 2008 by the Massachusetts Institute of Technology.
  * All Rights Reserved.
  *
@@ -97,9 +100,15 @@
 #define KG_TOK_MIC_MSG          0x0101
 #define KG_TOK_WRAP_MSG         0x0201
 #define KG_TOK_DEL_CTX          0x0102
-#define KG2_TOK_MIC_MSG         0x0404
-#define KG2_TOK_WRAP_MSG        0x0504
+
+#define KG2_TOK_INITIAL		0x0101
+#define KG2_TOK_RESPONSE	0x0202
+#define KG2_TOK_MIC		0x0303
+#define KG2_TOK_MIC_MSG_UHH     0x0404
+#define KG2_TOK_WRAP_INTEG_UHH	0x0404
 #define KG2_TOK_DEL_CTX         0x0405
+#define KG2_TOK_WRAP_MSG        0x0504
+#define KG2_TOK_WRAP_PRIV	0x0505
 
 #define KRB5_GSS_FOR_CREDS_OPTION 1
 
@@ -191,6 +200,7 @@ typedef struct _krb5_gss_ctx_id_rec {
     int sealalg;
     krb5_keyblock *enc;
     krb5_keyblock *seq;
+   krb5_timestamp endtime;
     krb5_ticket_times krb_times;
     krb5_flags krb_flags;
     /* XXX these used to be signed.  the old spec is inspecific, and
@@ -289,7 +299,8 @@ krb5_error_code kg_encrypt_iov (krb5_context context,
                                 int iov_count);
 
 krb5_error_code
-kg_arcfour_docrypt (const krb5_keyblock *longterm_key , int ms_usage,
+kg_arcfour_docrypt (krb5_context,
+                    const krb5_keyblock *longterm_key , int ms_usage,
                     const unsigned char *kd_data, size_t kd_data_len,
                     const unsigned char *input_buf, size_t input_len,
                     unsigned char *output_buf);
@@ -523,6 +534,9 @@ OM_uint32 krb5_gss_delete_sec_context
 (OM_uint32*,       /* minor_status */
  gss_ctx_id_t*,    /* context_handle */
  gss_buffer_t      /* output_token */
+#ifdef	_KERNEL
+            /* */, OM_uint32	/* context verifier */
+#endif
 );
 
 OM_uint32 krb5_gss_context_time
@@ -530,6 +544,53 @@ OM_uint32 krb5_gss_context_time
  gss_ctx_id_t,     /* context_handle */
  OM_uint32*        /* time_rec */
 );
+
+OM_uint32 krb5_gss_sign
+(OM_uint32*,       /* minor_status */
+            gss_ctx_id_t,     /* context_handle */
+            int,              /* qop_req */
+            gss_buffer_t,     /* message_buffer */
+            gss_buffer_t      /* message_token */
+#ifdef	_KERNEL
+            /* */, OM_uint32	/* context verifier */
+#endif
+           );
+
+OM_uint32 krb5_gss_verify
+(OM_uint32*,       /* minor_status */
+            gss_ctx_id_t,     /* context_handle */
+            gss_buffer_t,     /* message_buffer */
+            gss_buffer_t,     /* token_buffer */
+            int*              /* qop_state */
+#ifdef	_KERNEL
+            /* */, OM_uint32	/* context verifier */
+#endif
+           );
+
+OM_uint32 krb5_gss_seal
+(OM_uint32*,       /* minor_status */
+            gss_ctx_id_t,     /* context_handle */
+            int,              /* conf_req_flag */
+            int,              /* qop_req */
+            gss_buffer_t,     /* input_message_buffer */
+            int*,             /* conf_state */
+            gss_buffer_t      /* output_message_buffer */
+#ifdef	_KERNEL
+            /* */, OM_uint32	/* context verifier */
+#endif
+           );
+
+OM_uint32 krb5_gss_unseal
+(OM_uint32*,       /* minor_status */
+            gss_ctx_id_t,     /* context_handle */
+            gss_buffer_t,     /* input_message_buffer */
+            gss_buffer_t,     /* output_message_buffer */
+            int*,             /* conf_state */
+            int*              /* qop_state */
+#ifdef	_KERNEL
+            /* */, OM_uint32	/* context verifier */
+#endif
+           );
 
 OM_uint32 krb5_gss_display_status
 (OM_uint32*,       /* minor_status */
@@ -737,6 +798,7 @@ OM_uint32 krb5_gss_inquire_names_for_mech
  gss_OID_set *               /* name_types */
 );
 
+/* SUNW15resync - XXX nullify? */
 OM_uint32 krb5_gss_canonicalize_name
 (OM_uint32  *,          /* minor_status */
  const gss_name_t,           /* input_name */
@@ -783,6 +845,41 @@ OM_uint32 gss_krb5int_unseal_token_v3(krb5_context *contextptr,
                                       int *conf_state, gss_qop_t *qop_state,
                                       int toktype);
 
+/*
+ * SUNW15resync
+ * Solaris specific interfaces start
+ */
+
+OM_uint32 krb5_gss_store_cred (
+	    OM_uint32 *,            /* minor_status */
+	    const gss_cred_id_t,    /* input_cred */
+	    gss_cred_usage_t,       /* cred_usage */
+	    const gss_OID,          /* desired_mech */
+	    OM_uint32,              /* overwrite_cred */
+	    OM_uint32,              /* default_cred */
+	    gss_OID_set *,          /* elements_stored */
+	    gss_cred_usage_t *      /* cred_usage_stored */
+	   );
+
+OM_uint32 krb5_pname_to_uid(
+		OM_uint32 *,		/* minor status */
+		const gss_name_t,	/* pname */
+		uid_t *			/* uidOUt */
+		);
+
+OM_uint32 krb5_gss_userok(
+	OM_uint32 *,		/* minor status */
+	const gss_name_t,	/* remote user principal name */
+	const char *,		/* local unix user name */
+	int *			/* remote user ok to login w/out pw? */
+	);
+
+
+/*
+ * SUNW15resync
+ * Solaris specific interfaces end
+ */
+
 int gss_krb5int_rotate_left (void *ptr, size_t bufsiz, size_t rc);
 
 /*
@@ -792,6 +889,7 @@ int gss_krb5int_rotate_left (void *ptr, size_t bufsiz, size_t rc);
 #define GSS_KRB5_GET_TKT_FLAGS_OID_LENGTH 11
 #define GSS_KRB5_GET_TKT_FLAGS_OID "\x2a\x86\x48\x86\xf7\x12\x01\x02\x02\x05\x01"
 
+#ifndef _KERNEL
 OM_uint32 KRB5_CALLCONV gss_krb5int_get_tkt_flags
 (OM_uint32 *minor_status,
  const gss_ctx_id_t context_handle,
@@ -804,8 +902,7 @@ OM_uint32 KRB5_CALLCONV gss_krb5int_get_tkt_flags
 OM_uint32 KRB5_CALLCONV gss_krb5int_copy_ccache
 (OM_uint32 *minor_status,
  gss_cred_id_t cred_handle,
- const gss_OID desired_oid,
- const gss_buffer_t value);
+		   krb5_ccache out_ccache);
 
 #define GSS_KRB5_CCACHE_NAME_OID_LENGTH 11
 #define GSS_KRB5_CCACHE_NAME_OID "\x2a\x86\x48\x86\xf7\x12\x01\x02\x02\x05\x03"
@@ -835,6 +932,13 @@ struct krb5_gss_set_allowable_enctypes_req {
 OM_uint32
 gss_krb5int_inq_session_key(OM_uint32 *, const gss_ctx_id_t, const gss_OID, gss_buffer_set_t *);
 
+OM_uint32 KRB5_CALLCONV
+gss_krb5int_set_allowable_enctypes(OM_uint32 *minor_status, 
+				   gss_cred_id_t cred,
+				   OM_uint32 num_ktypes,
+				   krb5_enctype *ktypes);
+
+#endif /* _KERNEL */
 OM_uint32 KRB5_CALLCONV
 gss_krb5int_set_allowable_enctypes(OM_uint32 *minor_status,
                                    gss_cred_id_t cred,

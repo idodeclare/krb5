@@ -1,3 +1,7 @@
+/*
+ * Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
+ * Use is subject to license terms.
+ */
 /* -*- mode: c; indent-tabs-mode: nil -*- */
 /*
  * Copyright 1993 by OpenVision Technologies, Inc.
@@ -22,9 +26,9 @@
  */
 
 #include "gssapiP_krb5.h"
+#include "mechglueP.h" /* SUNW17PACresync */
 
 /*
- * $Id$
  */
 
 OM_uint32 KRB5_CALLCONV

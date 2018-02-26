@@ -1,4 +1,10 @@
 /*
+ * Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
+ * Use is subject to license terms.
+ */
+
+
+/*
  * kdc/kdc_preauth.c
  *
  * Copyright 1995, 2003, 2007 by the Massachusetts Institute of Technology.
@@ -82,17 +88,15 @@
 #include "k5-int.h"
 #include "kdc_util.h"
 #include "extern.h"
+#include "com_err.h"
+#include <assert.h>
 #include <stdio.h>
 #include "adm_proto.h"
-#if APPLE_PKINIT
-#include "pkinit_server.h"
-#include "pkinit_cert_store.h"
-#endif /* APPLE_PKINIT */
-
+#include <libintl.h>
 #include <syslog.h>
 
 #include <assert.h>
-#include "../include/krb5/preauth_plugin.h"
+#include "preauth_plugin.h"
 
 #if TARGET_OS_MAC
 static const char *objdirs[] = { KRB5_PLUGIN_BUNDLE_DIR, LIBDIR "/krb5/plugins/preauth", NULL }; /* should be a list */
@@ -226,58 +230,7 @@ static krb5_error_code return_sam_data
 		    void *pa_module_context,
 		    void **pa_request_context);
 
-#if APPLE_PKINIT
-/* PKINIT preauth support */
-static krb5_error_code get_pkinit_edata(
-    krb5_context context, 
-    krb5_kdc_req *request,
-    krb5_db_entry *client, 
-    krb5_db_entry *server,
-    preauth_get_entry_data_proc get_entry_data,
-    void *pa_module_context,
-    krb5_pa_data *pa_data);
-static krb5_error_code verify_pkinit_request(
-    krb5_context context,
-    krb5_db_entry *client,
-    krb5_data *req_pkt,
-    krb5_kdc_req *request,
-    krb5_enc_tkt_part *enc_tkt_reply, 
-    krb5_pa_data *data,
-    preauth_get_entry_data_proc get_entry_data,
-    void *pa_module_context,
-    void **pa_request_context,
-    krb5_data **e_data,
-    krb5_authdata ***authz_data);
-static krb5_error_code return_pkinit_response(
-    krb5_context context, 
-    krb5_pa_data * padata, 
-    krb5_db_entry *client,
-    krb5_data *req_pkt,
-    krb5_kdc_req *request, 
-    krb5_kdc_rep *reply,
-    krb5_key_data *client_key,
-    krb5_keyblock *encrypting_key,
-    krb5_pa_data **send_pa,
-    preauth_get_entry_data_proc get_entry_data,
-    void *pa_module_context,
-    void **pa_request_context);
-#endif /* APPLE_PKINIT */
-
 static krb5_preauth_systems static_preauth_systems[] = {
-#if APPLE_PKINIT
-    {
-	"pkinit",
-	KRB5_PADATA_PK_AS_REQ,
-	PA_SUFFICIENT,	
-	NULL,			/* pa_sys_context */
-	NULL,			/* init */
-	NULL,			/* fini */
-	get_pkinit_edata,	
-	verify_pkinit_request,
-	return_pkinit_response,
-	NULL			/* free_pa_request_context */
-    },
-#endif /* APPLE_PKINIT */
     {
 	"timestamp",
         KRB5_PADATA_ENC_TIMESTAMP,
@@ -1008,7 +961,8 @@ void get_preauth_hint_list(krb5_kdc_req *request, krb5_db_entry *client,
     }
 /* If we fail to get the cookie it is probably still reasonable to continue with the response*/
     kdc_preauth_get_cookie(request->kdc_state, pa);
-    retval = encode_krb5_padata_sequence(pa_data, &edat);
+    retval = encode_krb5_padata_sequence((krb5_pa_data * const *) pa_data,
+					 &edat);
     if (retval)
 	goto errout;
     *e_data = *edat;
@@ -1190,7 +1144,8 @@ check_padata (krb5_context context, krb5_db_entry *client, krb5_data *req_pkt,
 	e_data->data = malloc(pa_e_data->length);
 	if (e_data->data == NULL) {
 	    krb5_free_data(context, pa_e_data);
-	    return KRB5KRB_ERR_GENERIC;
+	    /* Solaris Kerberos */
+	    return ENOMEM;
 	}
 	memcpy(e_data->data, pa_e_data->data, pa_e_data->length);
 	e_data->length = pa_e_data->length;
@@ -1203,12 +1158,17 @@ check_padata (krb5_context context, krb5_db_entry *client, krb5_data *req_pkt,
     if (pa_ok)
 	return 0;
 
-    /* pa system was not found; we may return PREAUTH_REQUIRED later,
-       but we did not actually fail to verify the pre-auth. */
-    if (!pa_found)
+    /* pa system was not found, but principal doesn't require preauth */
+    if (!pa_found &&
+	!isflagset(client->attributes, KRB5_KDB_REQUIRES_PRE_AUTH) &&
+	!isflagset(client->attributes, KRB5_KDB_REQUIRES_HW_AUTH))
        return 0;
 
-
+    if (!pa_found) {
+	emsg = krb5_get_error_message(context, retval);
+	krb5_klog_syslog (LOG_INFO, "no valid preauth type found: %s", emsg);
+	krb5_free_error_message(context, emsg);
+    }
     /* The following switch statement allows us
      * to return some preauth system errors back to the client.
      */
@@ -1414,6 +1374,7 @@ verify_enc_timestamp(krb5_context context, krb5_db_entry *client,
     krb5_timestamp		timenow;
     krb5_error_code		decrypt_err = 0;
 
+    (void) memset(&key, 0, sizeof(krb5_keyblock));
     scratch.data = (char *)pa->contents;
     scratch.length = pa->length;
 
@@ -1503,7 +1464,7 @@ cleanup:
 
 static krb5_error_code
 _make_etype_info_entry(krb5_context context,
-		       krb5_principal client_princ, krb5_key_data *client_key,
+		       krb5_kdc_req *request, krb5_key_data *client_key,
 		       krb5_enctype etype, krb5_etype_info_entry **entry,
 		       int etype_info2)
 {
@@ -1522,7 +1483,8 @@ _make_etype_info_entry(krb5_context context,
     tmp_entry->salt = 0;
     tmp_entry->s2kparams.data = NULL;
     tmp_entry->s2kparams.length = 0;
-    retval = get_salt_from_key(context, client_princ, client_key, &salt);
+    retval = get_salt_from_key(context, request->client,
+			       client_key, &salt);
     if (retval)
 	goto fail;
     if (etype_info2 && client_key->key_data_ver > 1 &&
@@ -1601,10 +1563,10 @@ etype_info_helper(krb5_context context, krb5_kdc_req *request,
 	if (request_contains_enctype(context, request, db_etype)) {
 	    assert(etype_info2 ||
 		   !enctype_requires_etype_info_2(db_etype));
-	    retval = _make_etype_info_entry(context, client->princ, client_key,
-					    db_etype, &entry[i], etype_info2);
-	    if (retval != 0)
+	    if ((retval = _make_etype_info_entry(context, request, client_key,
+			    db_etype, &entry[i], etype_info2)) != 0) {
 		goto cleanup;
+	    }
 	    entry[i+1] = 0;
 	    i++;
 	}
@@ -1626,11 +1588,10 @@ etype_info_helper(krb5_context context, krb5_kdc_req *request,
 
 	    }
 	    if (request_contains_enctype(context, request, db_etype)) {
-		retval = _make_etype_info_entry(context, client->princ,
-						client_key, db_etype,
-						&entry[i], etype_info2);
-		if (retval != 0)
+		if ((retval = _make_etype_info_entry(context, request,
+				client_key, db_etype, &entry[i], etype_info2)) != 0) {
 		    goto cleanup;
+		}
 		entry[i+1] = 0;
 		i++;
 	    }
@@ -1638,9 +1599,10 @@ etype_info_helper(krb5_context context, krb5_kdc_req *request,
 	}
     }
     if (etype_info2)
-	retval = encode_krb5_etype_info2(entry, &scratch);
-    else
- 	retval = encode_krb5_etype_info(entry, &scratch);
+	retval = encode_krb5_etype_info2((krb5_etype_info_entry * const*) entry,
+				    &scratch);
+    else 	retval = encode_krb5_etype_info((krb5_etype_info_entry * const*) entry,
+				    &scratch);
     if (retval)
 	goto cleanup;
     pa_data->contents = (unsigned char *)scratch->data;
@@ -1725,20 +1687,20 @@ etype_info_as_rep_helper(krb5_context context, krb5_pa_data * padata,
     }
     entry[0] = NULL;
     entry[1] = NULL;
-    retval = _make_etype_info_entry(context, client->princ, client_key,
-				    encrypting_key->enctype, entry,
-				    etype_info2);
+    retval = _make_etype_info_entry(context, request,
+				    client_key, encrypting_key->enctype,
+				    entry, etype_info2);
     if (retval)
 	goto cleanup;
 
     if (etype_info2)
-	retval = encode_krb5_etype_info2(entry, &scratch);
+	retval = encode_krb5_etype_info2((krb5_etype_info_entry * const*) entry, &scratch);
     else
-	retval = encode_krb5_etype_info(entry, &scratch);
+	retval = encode_krb5_etype_info((krb5_etype_info_entry * const*) entry, &scratch);
 
     if (retval)
 	goto cleanup;
-    tmp_padata->contents = (krb5_octet *)scratch->data;
+    tmp_padata->contents = (uchar_t *)scratch->data;
     tmp_padata->length = scratch->length;
     *send_pa = tmp_padata;
 
@@ -1908,12 +1870,12 @@ return_sam_data(krb5_context context, krb5_pa_data *in_padata,
      * all this once.
      */
 
-    scratch.data = (char *)in_padata->contents;
+    scratch.data = (char *) in_padata->contents; /* SUNWresync121 XXX */
     scratch.length = in_padata->length;
     
     if ((retval = decode_krb5_sam_response(&scratch, &sr))) {
-	kdc_err(context, retval,
-		"return_sam_data(): decode_krb5_sam_response failed");
+	com_err("krb5kdc", retval,
+		gettext("return_sam_data(): decode_krb5_sam_response failed"));
 	goto cleanup;
     }
 
@@ -1931,24 +1893,25 @@ return_sam_data(krb5_context context, krb5_pa_data *in_padata,
 
 	if ((retval = krb5_c_decrypt(context, &psr_key, /* XXX */ 0, 0,
 				     &tmpdata, &scratch))) {
-	    kdc_err(context, retval,
-		    "return_sam_data(): decrypt track_id failed");
+	    com_err("krb5kdc", retval,
+		    gettext("return_sam_data(): decrypt track_id failed"));
 	    free(scratch.data);
 	    goto cleanup;
 	}
     }
 
     if ((retval = decode_krb5_predicted_sam_response(&scratch, &psr))) {
-	kdc_err(context, retval,
-		"return_sam_data(): decode_krb5_predicted_sam_response failed");
+	com_err("krb5kdc", retval,
+		gettext(
+		"return_sam_data(): decode_krb5_predicted_sam_response failed"));
 	free(scratch.data);
 	goto cleanup;
     }
 
     /* We could use sr->sam_flags, but it may be absent or altered. */
     if (psr->sam_flags & KRB5_SAM_MUST_PK_ENCRYPT_SAD) {
-	kdc_err(context, retval = KRB5KDC_ERR_PREAUTH_FAILED,
-		"Unsupported SAM flag must-pk-encrypt-sad");
+	com_err("krb5kdc", retval = KRB5KDC_ERR_PREAUTH_FAILED,
+		gettext("Unsupported SAM flag must-pk-encrypt-sad"));
 	goto cleanup;
     }
     if (psr->sam_flags & KRB5_SAM_SEND_ENCRYPTED_SAD) {
@@ -2000,8 +1963,8 @@ return_sam_data(krb5_context context, krb5_pa_data *in_padata,
 	break;
 
     default:
-	kdc_err(context, retval = KRB5KDC_ERR_PREAUTH_FAILED,
-		"Unimplemented keytype for SAM key mixing");
+	com_err("krb5kdc", retval = KRB5KDC_ERR_PREAUTH_FAILED,
+		gettext("Unimplemented keytype for SAM key mixing"));
 	goto cleanup;
     }
 
@@ -2019,9 +1982,11 @@ static struct {
   char* name;
   int   sam_type;
 } *sam_ptr, sam_inst_map[] = {
+#if 0	/* SUNWresync121 - unsupported hardware and kdc.log annoyance */
   { "SNK4", PA_SAM_TYPE_DIGI_PATH, },
   { "SECURID", PA_SAM_TYPE_SECURID, },
   { "GRAIL", PA_SAM_TYPE_GRAIL, },
+#endif
   { 0, 0 },
 };
 
@@ -2040,8 +2005,9 @@ get_sam_edata(krb5_context context, krb5_kdc_req *request,
     char inputblock[8];
     krb5_data predict_response;
 
-    memset(&sc, 0, sizeof(sc));
-    memset(&psr, 0, sizeof(psr));
+    (void) memset(&encrypting_key, 0, sizeof(krb5_keyblock));
+    (void) memset(&sc, 0, sizeof(sc));
+    (void) memset(&psr, 0, sizeof(psr));
 
     /* Given the client name we can figure out what type of preauth
        they need. The spec is currently for querying the database for
@@ -2068,7 +2034,9 @@ get_sam_edata(krb5_context context, krb5_kdc_req *request,
 
       retval = krb5_copy_principal(kdc_context, request->client, &newp);
       if (retval) {
-	kdc_err(kdc_context, retval, "copying client name for preauth probe");
+	com_err(gettext("krb5kdc"),
+		retval,
+		gettext("copying client name for preauth probe"));
 	return retval;
       }
 
@@ -2082,7 +2050,7 @@ get_sam_edata(krb5_context context, krb5_kdc_req *request,
 	krb5_princ_component(kdc_context,newp,probeslot)->length = 
 	  strlen(sam_ptr->name);
 	npr = 1;
-	retval = get_principal(kdc_context, newp, &assoc, &npr, &more);
+	retval = krb5_db_get_principal(kdc_context, newp, &assoc, &npr, (uint *)&more);
 	if(!retval && npr) {
 	  sc.sam_type = sam_ptr->sam_type;
 	  break;
@@ -2126,8 +2094,10 @@ get_sam_edata(krb5_context context, krb5_kdc_req *request,
 	  if (retval) {
 	    char *sname;
 	    krb5_unparse_name(kdc_context, request->client, &sname);
-	    kdc_err(kdc_context, retval, 
-		    "snk4 finding the enctype and key <%s>", sname);
+	    com_err(gettext("krb5kdc"), 
+		    retval, 
+		    gettext("snk4 finding the enctype and key <%s>"),
+		    sname);
 	    free(sname);
 	    return retval;
 	  }
@@ -2137,8 +2107,9 @@ get_sam_edata(krb5_context context, krb5_kdc_req *request,
 					       assoc_key, &encrypting_key,
 					       NULL);
 	  if (retval) {
-	    kdc_err(kdc_context, retval, 
-		    "snk4 pulling out key entry");
+	    com_err(gettext("krb5kdc"),
+		    retval, 
+		   gettext("snk4 pulling out key entry"));
 	    return retval;
 	  }
 	  /* now we can use encrypting_key... */
@@ -2236,7 +2207,7 @@ get_sam_edata(krb5_context context, krb5_kdc_req *request,
       if (retval) goto cleanup;
       pa_data->magic = KV5M_PA_DATA;
       pa_data->pa_type = KRB5_PADATA_SAM_CHALLENGE;
-      pa_data->contents = (krb5_octet *)scratch->data;
+      pa_data->contents = (unsigned char *) scratch->data;
       pa_data->length = scratch->length;
       
       retval = 0;
@@ -2255,24 +2226,27 @@ get_sam_edata(krb5_context context, krb5_kdc_req *request,
 	char outputblock[8];
 	int i;
 
-	session_key.contents = 0;
+	(void) memset(&session_key, 0, sizeof(krb5_keyblock));
 
-	memset(inputblock, 0, 8);
+	(void) memset(inputblock, 0, 8);
 
 	retval = krb5_c_make_random_key(kdc_context, ENCTYPE_DES_CBC_CRC,
 					&session_key);
 
 	if (retval) {
 	  /* random key failed */
-	  kdc_err(kdc_context, retval,
-		  "generating random challenge for preauth");
+	  com_err(gettext("krb5kdc"),
+		 retval,
+		gettext("generating random challenge for preauth"));
 	  return retval;
 	}
 	/* now session_key has a key which we can pick bits out of */
 	/* we need six decimal digits. Grab 6 bytes, div 2, mod 10 each. */
 	if (session_key.length != 8) {
-	  kdc_err(kdc_context, retval = KRB5KDC_ERR_ETYPE_NOSUPP,
-		  "keytype didn't match code expectations");
+		 retval = KRB5KDC_ERR_ETYPE_NOSUPP,
+	  com_err(gettext("krb5kdc"),
+		 retval = KRB5KDC_ERR_ETYPE_NOSUPP,
+		 gettext("keytype didn't match code expectations"));
 	  return retval;
 	}
 	for(i = 0; i<6; i++) {
@@ -2288,8 +2262,11 @@ get_sam_edata(krb5_context context, krb5_kdc_req *request,
 
 	encrypting_key.enctype = ENCTYPE_DES_CBC_RAW;
 
-	if (retval)
-	    kdc_err(kdc_context, retval, "snk4 processing key");
+	if (retval) {
+	  com_err(gettext("krb5kdc"),
+		 retval,
+		gettext("snk4 processing key"));
+	}
 
 	{
 	    krb5_data plain;
@@ -2306,8 +2283,9 @@ get_sam_edata(krb5_context context, krb5_kdc_req *request,
 
 	    if ((retval = krb5_c_encrypt(kdc_context, &encrypting_key,
 					 /* XXX */ 0, 0, &plain, &cipher))) {
-		kdc_err(kdc_context, retval,
-			"snk4 response generation failed");
+		com_err(gettext("krb5kdc"), 
+		retval, 
+		gettext("snk4 response generation failed"));
 		return retval;
 	    }
 	}
@@ -2405,7 +2383,7 @@ sc.sam_challenge_label.length = strlen(sc.sam_challenge_label.data);
       if (retval) goto cleanup;
       pa_data->magic = KV5M_PA_DATA;
       pa_data->pa_type = KRB5_PADATA_SAM_CHALLENGE;
-      pa_data->contents = (krb5_octet *)scratch->data;
+      pa_data->contents = (unsigned char *) scratch->data;
       pa_data->length = scratch->length;
       
       retval = 0;
@@ -2441,7 +2419,7 @@ verify_sam_response(krb5_context context, krb5_db_entry *client,
     
     if ((retval = decode_krb5_sam_response(&scratch, &sr))) {
 	scratch.data = 0;
-	kdc_err(context, retval, "decode_krb5_sam_response failed");
+	com_err("krb5kdc", retval, gettext("decode_krb5_sam_response failed"));
 	goto cleanup;
     }
 
@@ -2461,14 +2439,16 @@ verify_sam_response(krb5_context context, krb5_db_entry *client,
 
       if ((retval = krb5_c_decrypt(context, &psr_key, /* XXX */ 0, 0,
 				   &tmpdata, &scratch))) {
-	  kdc_err(context, retval, "decrypt track_id failed");
+	  com_err(gettext("krb5kdc"),
+		retval,
+		gettext("decrypt track_id failed"));
 	  goto cleanup;
       }
     }
 
     if ((retval = decode_krb5_predicted_sam_response(&scratch, &psr))) {
-	kdc_err(context, retval,
-		"decode_krb5_predicted_sam_response failed -- replay attack?");
+	com_err(gettext("krb5kdc"), retval,
+		gettext("decode_krb5_predicted_sam_response failed -- replay attack?"));
 	goto cleanup;
     }
 
@@ -2478,8 +2458,8 @@ verify_sam_response(krb5_context context, krb5_db_entry *client,
     if ((retval = krb5_unparse_name(context, psr->client, &princ_psr)))
 	goto cleanup;
     if (strcmp(princ_req, princ_psr) != 0) {
-	kdc_err(context, retval = KRB5KDC_ERR_PREAUTH_FAILED,
-		"Principal mismatch in SAM psr! -- replay attack?");
+	com_err("krb5kdc", retval = KRB5KDC_ERR_PREAUTH_FAILED,
+		gettext("Principal mismatch in SAM psr! -- replay attack?"));
 	goto cleanup;
     }
 
@@ -2496,8 +2476,8 @@ verify_sam_response(krb5_context context, krb5_db_entry *client,
 	 * psr's would be able to be replayed.
 	 */
 	if (timenow - psr->stime > rc_lifetime) {
-	    kdc_err(context, retval = KRB5KDC_ERR_PREAUTH_FAILED,
-	    "SAM psr came back too late! -- replay attack?");
+	    com_err("krb5kdc", retval = KRB5KDC_ERR_PREAUTH_FAILED,
+	    gettext("SAM psr came back too late! -- replay attack?"));
 	    goto cleanup;
 	}
 
@@ -2509,7 +2489,7 @@ verify_sam_response(krb5_context context, krb5_db_entry *client,
 	rep.cusec = psr->susec;
 	retval = krb5_rc_store(kdc_context, kdc_rcache, &rep);
 	if (retval) {
-	    kdc_err(kdc_context, retval, "SAM psr replay attack!");
+	    com_err("krb5kdc", retval, gettext("SAM psr replay attack!"));
 	    goto cleanup;
 	}
     }
@@ -2526,13 +2506,13 @@ verify_sam_response(krb5_context context, krb5_db_entry *client,
 
 	if ((retval = krb5_c_decrypt(context, &psr->sam_key, /* XXX */ 0,
 				     0, &sr->sam_enc_nonce_or_ts, &scratch))) {
-	    kdc_err(context, retval, "decrypt nonce_or_ts failed");
+	    com_err("krb5kdc", retval, gettext("decrypt nonce_or_ts failed"));
 	    goto cleanup;
 	}
     }
 
     if ((retval = decode_krb5_enc_sam_response_enc(&scratch, &esre))) {
-	kdc_err(context, retval, "decode_krb5_enc_sam_response_enc failed");
+	com_err("krb5kdc", retval, gettext("decode_krb5_enc_sam_response_enc failed"));
 	goto cleanup;
     }
 
@@ -2549,8 +2529,9 @@ verify_sam_response(krb5_context context, krb5_db_entry *client,
     setflag(enc_tkt_reply->flags, TKT_FLG_HW_AUTH);
 
   cleanup:
-    if (retval)
-	kdc_err(context, retval, "sam verify failure");
+    if (retval) com_err(gettext("krb5kdc"), 
+			retval,
+			gettext("sam verify failure"));
     if (scratch.data) free(scratch.data);
     if (sr) free(sr);
     if (psr) free(psr);
@@ -2560,15 +2541,6 @@ verify_sam_response(krb5_context context, krb5_db_entry *client,
 
     return retval;
 }
-
-#if APPLE_PKINIT
-/* PKINIT preauth support */
-#define  PKINIT_DEBUG    0
-#if     PKINIT_DEBUG
-#define kdcPkinitDebug(args...)       printf(args)
-#else
-#define kdcPkinitDebug(args...)
-#endif
 
 /*
  * get_edata() - our only job is to determine whether this KDC is capable of 

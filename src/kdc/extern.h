@@ -1,4 +1,18 @@
 /*
+ * Copyright 2006 Sun Microsystems, Inc.  All rights reserved.
+ * Use is subject to license terms.
+ */
+
+#ifndef	__KRB5_KDC_EXTERN__
+#define	__KRB5_KDC_EXTERN__
+
+#include <netinet/in.h>
+
+#ifdef	__cplusplus
+extern "C" {
+#endif
+
+/*
  * kdc/extern.h
  *
  * Copyright 1990,2001,2007,2009 by the Massachusetts Institute of Technology.
@@ -25,9 +39,6 @@
  *
  * <<< Description >>>
  */
-
-#ifndef __KRB5_KDC_EXTERN__
-#define __KRB5_KDC_EXTERN__
 
 typedef struct __kdc_realm_data {
     /*
@@ -93,7 +104,10 @@ kdc_realm_t *find_realm_data (char *, krb5_ui_4);
 #define	master_keyblock			kdc_active_realm->realm_mkey
 #define	master_keylist			kdc_active_realm->mkey_list
 #define	master_princ			kdc_active_realm->realm_mprinc
+#define	tgs_server_struct		*(kdc_active_realm->realm_tgsprinc)
 #define	tgs_server			kdc_active_realm->realm_tgsprinc
+#define	dbm_db_name			kdc_active_realm->realm_dbname
+#define	primary_port			kdc_active_realm->realm_pport
 #define reject_bad_transit		kdc_active_realm->realm_reject_bad_transit
 
 /* various externs for KDC */
@@ -105,4 +119,19 @@ extern krb5_int32	max_dgram_reply_size; /* maximum datagram size */
 
 extern volatile int signal_requests_exit;
 extern volatile int signal_requests_hup;
-#endif /* __KRB5_KDC_EXTERN__ */
+
+/* libbsm */ 
+extern void audit_krb5kdc_as_req(struct in_addr *, in_port_t, in_port_t,
+				char *, char *, int);
+extern void audit_krb5kdc_tgs_req(struct in_addr *, in_port_t, in_port_t,
+				char *, char *, int);
+extern void audit_krb5kdc_tgs_req_2ndtktmm(struct in_addr *, in_port_t,
+					in_port_t, char *, char *);
+extern void audit_krb5kdc_tgs_req_alt_tgt(struct in_addr *, in_port_t,
+					in_port_t, char *, char *, int);
+
+#ifdef	__cplusplus
+}
+#endif
+
+#endif /* !__KRB5_KDC_EXTERN__ */

@@ -1,4 +1,18 @@
 /*
+ * Copyright 2005 Sun Microsystems, Inc.  All rights reserved.
+ * Use is subject to license terms.
+ */
+
+#ifndef __KRB5_KDC_POLICY__
+#define	__KRB5_KDC_POLICY__
+
+#ifdef	__cplusplus
+extern "C" {
+#endif
+
+
+
+/*
  * kdc/policy.h
  *
  * Copyright 1990 by the Massachusetts Institute of Technology.
@@ -26,8 +40,6 @@
  * Declarations for policy.c
  */
 
-#ifndef __KRB5_KDC_POLICY__
-#define __KRB5_KDC_POLICY__
 
 extern int against_postdate_policy (krb5_timestamp);
 
@@ -36,4 +48,8 @@ extern int against_flag_policy_as (const krb5_kdc_req *);
 extern int against_flag_policy_tgs (const krb5_kdc_req *,
 					      const krb5_ticket *);
 
-#endif /* __KRB5_KDC_POLICY__ */
+#ifdef	__cplusplus
+}
+#endif
+
+#endif	/* !__KRB5_KDC_POLICY__ */
